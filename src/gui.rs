@@ -1,8 +1,10 @@
 use std::vec;
 use std::fmt;
+use std::collections::HashMap;
 
-use iced::widget::{column, row, button, pick_list, text, text_editor};
-use iced::{Element, Theme, Alignment, Length, Font};
+use iced::widget::{column, row, button, pick_list, text, text_editor, text_input, container, tooltip, mouse_area, Column};
+use iced::{Element, Theme, Alignment, Length, Font, Color, Border};
+use iced::widget::tooltip::Position;
 
 use unicorn_engine::*;
 use capstone::prelude::*;
@@ -17,6 +19,7 @@ struct State {
     architecture: Arch,
     unicorn: Unicorn<'static, ()>,
     changed_registers: Vec<u8>,
+    register_inputs: HashMap<u8, String>,
     code: text_editor::Content,
     heap: text_editor::Content,
     stack: text_editor::Content,
@@ -60,14 +63,18 @@ impl Default for State {
         let heap = heap(&uc);
         let stack = stack(&uc);
 
-        State {
+        let mut state = State {
             architecture: arch,
             unicorn: uc,
             changed_registers: vec![],
+            register_inputs: HashMap::new(),
             code: text_editor::Content::with_text(&code),
             heap: text_editor::Content::with_text(&heap),
             stack: text_editor::Content::with_text(&stack),
-        }
+        };
+
+        sync_register_inputs(&mut state);
+        state
     }
 }
 
@@ -79,6 +86,9 @@ enum Message {
     Edit(text_editor::Action),
     EditHeap(text_editor::Action),
     EditStack(text_editor::Action),
+    EditRegister { reg: u8, value: String },
+    ResetRegister { reg: u8 },
+    SaveRegisters,
     SelectArchitecture(MyArch),
 }
 
@@ -128,6 +138,111 @@ fn reset_state(state: &mut State) {
     state.stack = text_editor::Content::with_text(&stack);
 
     state.changed_registers.clear();
+    sync_register_inputs(state);
+}
+
+fn sync_register_inputs(state: &mut State) {
+    state.register_inputs.clear();
+    match state.architecture {
+        Arch::X86 => {
+            let registers = vec![
+                RegisterX86::RIP,
+                RegisterX86::RBP,
+                RegisterX86::RSP,
+                RegisterX86::RAX,
+                RegisterX86::RBX,
+                RegisterX86::RCX,
+                RegisterX86::RDX,
+                RegisterX86::RSI,
+                RegisterX86::RDI,
+                RegisterX86::R8,
+                RegisterX86::R9,
+                RegisterX86::R10,
+                RegisterX86::R11,
+                RegisterX86::R12,
+                RegisterX86::R13,
+                RegisterX86::R14,
+                RegisterX86::R15,
+            ];
+            for reg in registers {
+                let value = state.unicorn.reg_read(reg).expect("Failed to read register");
+                state.register_inputs.insert(reg as u8, format!("0x{:016x}", value));
+            }
+        }
+        Arch::ARM64 => {
+            let registers = vec![
+                RegisterARM64::PC,
+                RegisterARM64::SP,
+                RegisterARM64::X0,
+                RegisterARM64::X1,
+                RegisterARM64::X2,
+                RegisterARM64::X3,
+                RegisterARM64::X4,
+                RegisterARM64::X5,
+                RegisterARM64::X6,
+                RegisterARM64::X7,
+                RegisterARM64::X8,
+                RegisterARM64::X9,
+                RegisterARM64::X10,
+                RegisterARM64::X11,
+                RegisterARM64::X12,
+                RegisterARM64::X13,
+                RegisterARM64::X14,
+                RegisterARM64::X15,
+                RegisterARM64::X16,
+            ];
+            for reg in registers {
+                let value = state.unicorn.reg_read(reg).expect("Failed to read register");
+                state.register_inputs.insert(reg as u8, format!("0x{:016x}", value));
+            }
+        }
+        _ => panic!("Unsupported architecture"),
+    }
+}
+
+fn parse_register_input(input: &str) -> Option<u64> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let has_hex_prefix = trimmed.starts_with("0x") || trimmed.starts_with("0X");
+    let is_hex = has_hex_prefix || trimmed.chars().any(|ch| matches!(ch, 'a'..='f' | 'A'..='F'));
+    if has_hex_prefix {
+        u64::from_str_radix(trimmed.trim_start_matches("0x").trim_start_matches("0X"), 16).ok()
+    } else if is_hex {
+        u64::from_str_radix(trimmed, 16).ok()
+    } else {
+        trimmed.parse::<u64>().ok()
+    }
+}
+
+fn is_register_input_valid(input: &str) -> bool {
+    parse_register_input(input).is_some()
+}
+
+fn has_invalid_register_inputs(state: &State) -> bool {
+    state
+        .register_inputs
+        .values()
+        .any(|value| !is_register_input_valid(value))
+}
+
+fn has_pending_register_edits(state: &State) -> bool {
+    if has_invalid_register_inputs(state) {
+        return false;
+    }
+
+    for (&reg, value) in state.register_inputs.iter() {
+        if let Some(parsed) = parse_register_input(value) {
+            let current = state.unicorn.reg_read(reg).expect("Failed to read register");
+            if parsed != current {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 fn update(state: &mut State, message: Message) {
@@ -153,6 +268,7 @@ fn update(state: &mut State, message: Message) {
 
             let stack = stack(&state.unicorn);
             state.stack = text_editor::Content::with_text(&stack);
+            sync_register_inputs(state);
         },
         Message::Restart => {
             reset_state(state);
@@ -235,6 +351,7 @@ fn update(state: &mut State, message: Message) {
 
             let stack = stack(&state.unicorn);
             state.stack = text_editor::Content::with_text(&stack);
+            sync_register_inputs(state);
         },
         Message::Edit(action) => {
             state.code.perform(action);
@@ -244,6 +361,32 @@ fn update(state: &mut State, message: Message) {
         },
         Message::EditStack(action) => {
             state.stack.perform(action);
+        },
+        Message::EditRegister { reg, value } => {
+            state.register_inputs.insert(reg, value.clone());
+        },
+        Message::ResetRegister { reg } => {
+            let value = state.unicorn.reg_read(reg).expect("Failed to read register");
+            state.register_inputs.insert(reg, format!("0x{:016x}", value));
+        },
+        Message::SaveRegisters => {
+            let mut has_invalid = false;
+            for value in state.register_inputs.values() {
+                if !is_register_input_valid(value) {
+                    has_invalid = true;
+                    break;
+                }
+            }
+            if has_invalid {
+                return;
+            }
+
+            for (&reg, value) in state.register_inputs.iter() {
+                if let Some(parsed) = parse_register_input(value) {
+                    state.unicorn.reg_write(reg, parsed).expect("Failed to write register");
+                }
+            }
+            sync_register_inputs(state);
         },
         Message::SelectArchitecture(arch) => {
             state.architecture = myarch_to_arch(arch);
@@ -294,6 +437,7 @@ fn update(state: &mut State, message: Message) {
             state.stack = text_editor::Content::with_text(&stack);
 
             state.changed_registers.clear();
+            sync_register_inputs(state);
         },
     }
 }
@@ -384,6 +528,8 @@ fn arch_to_myarch(arch: Arch) -> MyArch {
 }
 
 fn view(state: &State) -> Element<Message> {
+    let can_save_registers = has_pending_register_edits(state);
+
     column![
         row![
             text("Architecture:"),
@@ -404,10 +550,17 @@ fn view(state: &State) -> Element<Message> {
                     .on_action(Message::Edit),
             ].width(Length::Fill).spacing(10),
             column![
-                row![text("Registers:").width(Length::Fill), button(text("Save"))]
+                row![
+                    text("Registers:").width(Length::Fill),
+                    if can_save_registers {
+                        button(text("Save")).on_press(Message::SaveRegisters)
+                    } else {
+                        button(text("Save"))
+                    },
+                ]
                 .spacing(10).align_y(Alignment::Center),
-                text(format_registers(&state.unicorn)),
-            ].width(Length::Fixed(250.)).spacing(10),
+                register_view(state),
+            ].width(Length::Fixed(650.)).spacing(10),
         ].padding(10).spacing(10),
         row![
             column![
@@ -426,15 +579,19 @@ fn theme(_state: &State) -> Theme {
     Theme::TokyoNight
 }
 
-fn format_registers(uc: &Unicorn<()>) -> String {
-    match uc.get_arch() {
-        Arch::X86 => format_registers_x86(uc),
-        Arch::ARM64 => format_registers_arm(uc),
+fn register_view<'a>(state: &'a State) -> Element<'a, Message> {
+    match state.unicorn.get_arch() {
+        Arch::X86 => register_view_x86(&state.unicorn, &state.changed_registers, &state.register_inputs),
+        Arch::ARM64 => register_view_arm(&state.unicorn, &state.changed_registers, &state.register_inputs),
         _ => panic!("Unsupported architecture"),
     }
 }
 
-fn format_registers_x86(uc: &Unicorn<()>) -> String {
+fn register_view_x86<'a>(
+    uc: &Unicorn<()>,
+    changed_registers: &[u8],
+    register_inputs: &HashMap<u8, String>,
+) -> Element<'a, Message> {
     let registers = vec![
         RegisterX86::RIP,
         RegisterX86::RBP,
@@ -455,16 +612,122 @@ fn format_registers_x86(uc: &Unicorn<()>) -> String {
         RegisterX86::R15,
     ];
 
-    let mut result = String::new();
+    let mut col = Column::new().spacing(12);
+    let mut pending: Option<Element<'_, Message>> = None;
+    
     for reg in registers.iter() {
         let value = uc.reg_read(*reg).expect("Failed to read register");
-        result.push_str(&format!("{:?}: 0x{:016x}\n", reg, value));
+        let is_changed = changed_registers.contains(&(*reg as u8));
+
+        let normal_text_color = Color::from_rgb(0.78, 0.82, 0.88);
+        let changed_text_color = Color::from_rgb(0.95, 0.84, 0.35);
+        let text_color = if is_changed { changed_text_color } else { normal_text_color };
+        let background_color = Color::from_rgb(0.13, 0.14, 0.2);
+        
+        let reg_name = format!("{:?}", reg);
+        let reg_id = *reg as u8;
+        let input_value = register_inputs
+            .get(&reg_id)
+            .cloned()
+            .unwrap_or_else(|| format!("0x{:016x}", value));
+        let is_valid = is_register_input_valid(&input_value);
+        let input = text_input("", &input_value)
+            .size(12)
+            .width(Length::Fixed(180.0))
+            .on_input(move |text| Message::EditRegister { reg: reg_id, value: text })
+            .style(move |theme: &Theme, status| {
+                let mut style = text_input::default(theme, status);
+                style.value = text_color;
+                style
+            });
+
+        let border_color = if is_valid {
+            Color::from_rgb(0.3, 0.3, 0.35)
+        } else {
+            Color::from_rgb(0.85, 0.3, 0.3)
+        };
+
+        let base_widget = container(
+            row![
+                text(reg_name)
+                    .size(12)
+                    .color(text_color)
+                    .width(Length::Fixed(100.0)),
+                input,
+            ]
+            .spacing(15)
+            .align_y(Alignment::Center)
+        )
+        .padding(12)
+        .style(move |_theme: &Theme| {
+            container::Style {
+                background: Some(iced::Background::Color(background_color)),
+                border: Border {
+                    color: border_color,
+                    width: 1.0,
+                    radius: 2.0.into(),
+                },
+                ..Default::default()
+            }
+        });
+
+        let base_element: Element<'_, Message> = if is_valid {
+            base_widget.into()
+        } else {
+            mouse_area(base_widget)
+                .on_press(Message::ResetRegister { reg: reg_id })
+                .into()
+        };
+        
+        // Add tooltip for 64-bit general purpose registers
+        let reg_element: Element<'_, Message> = match reg {
+            RegisterX86::RAX | RegisterX86::RBX | RegisterX86::RCX | RegisterX86::RDX |
+            RegisterX86::RSI | RegisterX86::RDI | RegisterX86::RBP | RegisterX86::RSP => {
+                let tooltip_content = format_x86_register_breakdown(*reg, value);
+                tooltip(base_element, text(tooltip_content).size(11), Position::Right)
+                    .style(|_theme: &Theme| {
+                        container::Style {
+                            background: Some(iced::Background::Color(Color::from_rgb(0.1, 0.1, 0.15))),
+                            border: Border {
+                                color: Color::from_rgb(0.4, 0.4, 0.5),
+                                width: 1.0,
+                                radius: 4.0.into(),
+                            },
+                            text_color: Some(Color::WHITE),
+                            ..Default::default()
+                        }
+                    })
+                    .into()
+            },
+            _ => base_element
+        };
+        
+        let reg_cell: Element<'_, Message> = container(reg_element)
+            .width(Length::FillPortion(1))
+            .into();
+
+        if let Some(left) = pending.take() {
+            col = col.push(row![left, reg_cell].spacing(16));
+        } else {
+            pending = Some(reg_cell);
+        }
     }
 
-    result
+    if let Some(left) = pending.take() {
+        let empty: Element<'_, Message> = container(text(""))
+            .width(Length::FillPortion(1))
+            .into();
+        col = col.push(row![left, empty].spacing(16));
+    }
+
+    col.into()
 }
 
-fn format_registers_arm(uc: &Unicorn<()>) -> String {
+fn register_view_arm<'a>(
+    uc: &Unicorn<()>,
+    changed_registers: &[u8],
+    register_inputs: &HashMap<u8, String>,
+) -> Element<'a, Message> {
     let registers = vec![
         RegisterARM64::PC,
         RegisterARM64::SP,
@@ -482,18 +745,174 @@ fn format_registers_arm(uc: &Unicorn<()>) -> String {
         RegisterARM64::X11,
         RegisterARM64::X12,
         RegisterARM64::X13,
-        RegisterARM64::X14,
-        RegisterARM64::X15,
-        RegisterARM64::X16,
     ];
 
-    let mut result = String::new();
+    let mut col = Column::new().spacing(12);
+    let mut pending: Option<Element<'_, Message>> = None;
+    
     for reg in registers.iter() {
         let value = uc.reg_read(*reg).expect("Failed to read register");
-        result.push_str(&format!("{:?}: 0x{:016x}\n", reg, value));
+        let is_changed = changed_registers.contains(&(*reg as u8));
+
+        let normal_text_color = Color::from_rgb(0.78, 0.82, 0.88);
+        let changed_text_color = Color::from_rgb(0.95, 0.84, 0.35);
+        let text_color = if is_changed { changed_text_color } else { normal_text_color };
+        let background_color = Color::from_rgb(0.13, 0.14, 0.2);
+        
+        let reg_name = format!("{:?}", reg);
+        let reg_id = *reg as u8;
+        let input_value = register_inputs
+            .get(&reg_id)
+            .cloned()
+            .unwrap_or_else(|| format!("0x{:016x}", value));
+        let is_valid = is_register_input_valid(&input_value);
+        let input = text_input("", &input_value)
+            .size(12)
+            .width(Length::Fixed(180.0))
+            .on_input(move |text| Message::EditRegister { reg: reg_id, value: text })
+            .style(move |theme: &Theme, status| {
+                let mut style = text_input::default(theme, status);
+                style.value = text_color;
+                style
+            });
+
+        let border_color = if is_valid {
+            Color::from_rgb(0.3, 0.3, 0.35)
+        } else {
+            Color::from_rgb(0.85, 0.3, 0.3)
+        };
+
+        let base_widget = container(
+            row![
+                text(reg_name)
+                    .size(12)
+                    .color(text_color)
+                    .width(Length::Fixed(100.0)),
+                input,
+            ]
+            .spacing(15)
+            .align_y(Alignment::Center)
+        )
+        .padding(12)
+        .style(move |_theme: &Theme| {
+            container::Style {
+                background: Some(iced::Background::Color(background_color)),
+                border: Border {
+                    color: border_color,
+                    width: 1.0,
+                    radius: 2.0.into(),
+                },
+                ..Default::default()
+            }
+        });
+
+        let base_element: Element<'_, Message> = if is_valid {
+            base_widget.into()
+        } else {
+            mouse_area(base_widget)
+                .on_press(Message::ResetRegister { reg: reg_id })
+                .into()
+        };
+        
+        // Add tooltip for X registers showing W variant
+        let reg_element: Element<'_, Message> = match reg {
+            RegisterARM64::X0 | RegisterARM64::X1 | RegisterARM64::X2 | RegisterARM64::X3 |
+            RegisterARM64::X4 | RegisterARM64::X5 | RegisterARM64::X6 | RegisterARM64::X7 |
+            RegisterARM64::X8 | RegisterARM64::X9 | RegisterARM64::X10 | RegisterARM64::X11 |
+            RegisterARM64::X12 | RegisterARM64::X13 => {
+                let tooltip_content = format_arm_register_breakdown(*reg, value);
+                tooltip(base_element, text(tooltip_content).size(11), Position::Right)
+                    .style(|_theme: &Theme| {
+                        container::Style {
+                            background: Some(iced::Background::Color(Color::from_rgb(0.1, 0.1, 0.15))),
+                            border: Border {
+                                color: Color::from_rgb(0.4, 0.4, 0.5),
+                                width: 1.0,
+                                radius: 4.0.into(),
+                            },
+                            text_color: Some(Color::WHITE),
+                            ..Default::default()
+                        }
+                    })
+                    .into()
+            },
+            _ => base_element
+        };
+        
+        let reg_cell: Element<'_, Message> = container(reg_element)
+            .width(Length::FillPortion(1))
+            .into();
+
+        if let Some(left) = pending.take() {
+            col = col.push(row![left, reg_cell].spacing(12));
+        } else {
+            pending = Some(reg_cell);
+        }
     }
 
-    result
+    if let Some(left) = pending.take() {
+        let empty: Element<'_, Message> = container(text(""))
+            .width(Length::FillPortion(1))
+            .into();
+        col = col.push(row![left, empty].spacing(12));
+    }
+
+    col.into()
+}
+
+fn format_x86_register_breakdown(reg: RegisterX86, value: u64) -> String {
+    let reg_name = format!("{:?}", reg);
+    
+    // Extract sub-registers for general purpose registers
+    match reg {
+        RegisterX86::RAX | RegisterX86::RBX | RegisterX86::RCX | RegisterX86::RDX => {
+            let prefix = &reg_name[1..2]; // Get A, B, C, or D
+            let exx = value as u32;
+            let xx = (value & 0xFFFF) as u16;
+            let xl = (value & 0xFF) as u8;
+            let xh = ((value >> 8) & 0xFF) as u8;
+            
+            format!(
+                "{}: 0x{:016x}\nE{}: 0x{:08x}\n{}: 0x{:04x}\n{}L: 0x{:02x}\n{}H: 0x{:02x}",
+                reg_name, value,
+                prefix, exx,
+                prefix, xx,
+                prefix, xl,
+                prefix, xh
+            )
+        },
+        RegisterX86::RSI | RegisterX86::RDI | RegisterX86::RBP | RegisterX86::RSP => {
+            let prefix = &reg_name[1..]; // Get SI, DI, BP, SP
+            let exx = value as u32;
+            let xx = (value & 0xFFFF) as u16;
+            
+            format!(
+                "{}: 0x{:016x}\nE{}: 0x{:08x}\n{}: 0x{:04x}",
+                reg_name, value,
+                prefix, exx,
+                prefix, xx
+            )
+        },
+        _ => format!("{}: 0x{:016x}", reg_name, value)
+    }
+}
+
+fn format_arm_register_breakdown(reg: RegisterARM64, value: u64) -> String {
+    let reg_name = format!("{:?}", reg);
+    
+    // Show W register (lower 32 bits) for X registers
+    if reg_name.starts_with("X") {
+        let w_val = value as u32;
+        let w_name = reg_name.replace("X", "W");
+        
+        format!(
+            "{}: 0x{:016x}\n{}: 0x{:08x}",
+            reg_name, value,
+            w_name, w_val
+        )
+    } else {
+        format!("{}: 0x{:016x}", reg_name, value)
+    }
 }
 
 fn format_memory(uc: &Unicorn<()>, address: u64, size: usize) -> String {
