@@ -21,6 +21,9 @@ struct State {
     changed_registers: Vec<u8>,
     register_inputs: HashMap<u8, String>,
     code: text_editor::Content,
+    code_with_addresses: String,
+    code_original: String,
+    code_is_valid: bool,
     heap: text_editor::Content,
     stack: text_editor::Content,
 }
@@ -59,7 +62,7 @@ impl Default for State {
             _ => panic!("Unsupported architecture"),
         }
 
-        let code = disassemble(&uc);
+        let (code_with_addr, code_without_addr) = disassemble(&uc);
         let heap = heap(&uc);
         let stack = stack(&uc);
 
@@ -68,7 +71,10 @@ impl Default for State {
             unicorn: uc,
             changed_registers: vec![],
             register_inputs: HashMap::new(),
-            code: text_editor::Content::with_text(&code),
+            code: text_editor::Content::with_text(&code_without_addr),
+            code_with_addresses: code_with_addr,
+            code_original: code_without_addr.clone(),
+            code_is_valid: true,
             heap: text_editor::Content::with_text(&heap),
             stack: text_editor::Content::with_text(&stack),
         };
@@ -89,6 +95,7 @@ enum Message {
     EditRegister { reg: u8, value: String },
     ResetRegister { reg: u8 },
     SaveRegisters,
+    SaveCode,
     SelectArchitecture(MyArch),
 }
 
@@ -128,8 +135,9 @@ fn reset_state(state: &mut State) {
         _ => panic!("Unsupported architecture"),
     }
 
-    let code = disassemble(&state.unicorn);
-    state.code = text_editor::Content::with_text(&code);
+    let (code_with_addr, code_without_addr) = disassemble(&state.unicorn);
+    state.code = text_editor::Content::with_text(&code_without_addr);
+    state.code_with_addresses = code_with_addr;
 
     let heap = heap(&state.unicorn);
     state.heap = text_editor::Content::with_text(&heap);
@@ -245,6 +253,32 @@ fn has_pending_register_edits(state: &State) -> bool {
     false
 }
 
+fn validate_assembly_code(code: &str, _arch: Arch) -> bool {
+    // Simple validation: check if code contains non-empty lines that look like assembly
+    // A more complete implementation would use Keystone to actually assemble
+    let mut has_instructions = false;
+    for line in code.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with("->") && trimmed[2..].trim().is_empty() {
+            continue;
+        }
+        // Remove cursor and check if line contains instruction-like content
+        let instruction = if trimmed.starts_with("->") {
+            &trimmed[2..].trim_start()
+        } else {
+            &trimmed[3..].trim_start()
+        };
+        if !instruction.is_empty() && instruction.len() > 2 {
+            has_instructions = true;
+        }
+    }
+    has_instructions
+}
+
+fn code_has_changes(code: &text_editor::Content, original: &str) -> bool {
+    code.text() != original
+}
+
 fn update(state: &mut State, message: Message) {
     match message {
         Message::Execute => {
@@ -260,8 +294,9 @@ fn update(state: &mut State, message: Message) {
                 return;
             }
 
-            let code = disassemble(&state.unicorn);
-            state.code = text_editor::Content::with_text(&code);
+            let (code_with_addr, code_without_addr) = disassemble(&state.unicorn);
+            state.code = text_editor::Content::with_text(&code_without_addr);
+            state.code_with_addresses = code_with_addr;
 
             let heap = heap(&state.unicorn);
             state.heap = text_editor::Content::with_text(&heap);
@@ -343,8 +378,9 @@ fn update(state: &mut State, message: Message) {
                 }
             }
 
-            let code = disassemble(&state.unicorn);
-            state.code = text_editor::Content::with_text(&code);
+            let (code_with_addr, code_without_addr) = disassemble(&state.unicorn);
+            state.code = text_editor::Content::with_text(&code_without_addr);
+            state.code_with_addresses = code_with_addr;
 
             let heap = heap(&state.unicorn);
             state.heap = text_editor::Content::with_text(&heap);
@@ -355,6 +391,8 @@ fn update(state: &mut State, message: Message) {
         },
         Message::Edit(action) => {
             state.code.perform(action);
+            // Validate the code after editing
+            state.code_is_valid = validate_assembly_code(&state.code.text(), state.architecture);
         },
         Message::EditHeap(action) => {
             state.heap.perform(action);
@@ -387,6 +425,15 @@ fn update(state: &mut State, message: Message) {
                 }
             }
             sync_register_inputs(state);
+        },
+        Message::SaveCode => {
+            if !state.code_is_valid {
+                return;
+            }
+            
+            // For now, just update the tracking to mark code as saved
+            // Full assembly compilation would go here with Keystone
+            state.code_original = state.code.text().clone();
         },
         Message::SelectArchitecture(arch) => {
             state.architecture = myarch_to_arch(arch);
@@ -427,8 +474,10 @@ fn update(state: &mut State, message: Message) {
                 _ => panic!("Unsupported architecture"),
             }
 
-            let code = disassemble(&state.unicorn);
-            state.code = text_editor::Content::with_text(&code);
+            let (code_with_addr, code_without_addr) = disassemble(&state.unicorn);
+            state.code = text_editor::Content::with_text(&code_without_addr);
+            state.code_with_addresses = code_with_addr;
+            state.code_original = code_without_addr;
             
             let heap = heap(&state.unicorn);
             state.heap = text_editor::Content::with_text(&heap);
@@ -449,7 +498,7 @@ fn myarch_to_arch(arch: MyArch) -> Arch {
     }
 }
 
-fn disassemble(uc: &Unicorn<'static, ()>) -> String {
+fn disassemble(uc: &Unicorn<'static, ()>) -> (String, String) {
     match uc.get_arch() {
         Arch::X86 => disassemble_x86(uc),
         Arch::ARM64 => disassemble_arm(uc),
@@ -457,8 +506,7 @@ fn disassemble(uc: &Unicorn<'static, ()>) -> String {
     }
 }
 
-fn disassemble_x86(uc: &Unicorn<()>) -> String {
-    let rip: u64 = uc.reg_read(RegisterX86::RIP).expect("Failed to read RIP");
+fn disassemble_x86(uc: &Unicorn<()>) -> (String, String) {
     let len: usize = HEXBIN_X86.len() / 2;
     let mut buffer = vec![0u8; len];
     uc.mem_read(0x1000, &mut buffer).expect("Failed to read memory");
@@ -466,17 +514,24 @@ fn disassemble_x86(uc: &Unicorn<()>) -> String {
     let disassembler = Capstone::new().x86().mode(arch::x86::ArchMode::Mode64).build().expect("Failed to create Capstone disassembler");
 
     let instructions = disassembler.disasm_all(&buffer, 0x1000).expect("Failed to disassemble instructions");
-    let mut result = String::new();
+    let mut with_addr = String::new();
+    let mut without_addr = String::new();
     for instruction in instructions.iter() {
-        let cursor = if instruction.address() == rip { "-> " } else { "   " };
-        result.push_str(&format!("{}{}\n", cursor, instruction));
+        let full_text = format!("{}", instruction);
+        with_addr.push_str(&format!("{}\n", full_text));
+        
+        // Extract just the mnemonic and operands after the colon
+        if let Some(colon_idx) = full_text.find(':') {
+            without_addr.push_str(&format!("{}\n", full_text[colon_idx + 1..].trim()));
+        } else {
+            without_addr.push_str(&format!("{}\n", full_text));
+        }
     }
 
-    result
+    (with_addr, without_addr)
 }
 
-fn disassemble_arm(uc: &Unicorn<()>) -> String {
-    let pc: u64 = uc.reg_read(RegisterARM64::PC).expect("Failed to read PC");
+fn disassemble_arm(uc: &Unicorn<()>) -> (String, String) {
     let len: usize = HEXBIN_ARM.len() / 2;
     let mut buffer = vec![0u8; len];
     uc.mem_read(0x1000, &mut buffer).expect("Failed to read memory");
@@ -484,13 +539,21 @@ fn disassemble_arm(uc: &Unicorn<()>) -> String {
     let disassembler = Capstone::new().arm64().mode(arch::arm64::ArchMode::Arm).build().expect("Failed to create Capstone disassembler");
 
     let instructions = disassembler.disasm_all(&buffer, 0x1000).expect("Failed to disassemble instructions");
-    let mut result = String::new();
+    let mut with_addr = String::new();
+    let mut without_addr = String::new();
     for instruction in instructions.iter() {
-        let cursor = if instruction.address() == pc { "-> " } else { "   " };
-        result.push_str(&format!("{}{}\n", cursor, instruction));
+        let full_text = format!("{}", instruction);
+        with_addr.push_str(&format!("{}\n", full_text));
+        
+        // Extract just the mnemonic and operands after the colon
+        if let Some(colon_idx) = full_text.find(':') {
+            without_addr.push_str(&format!("{}\n", full_text[colon_idx + 1..].trim()));
+        } else {
+            without_addr.push_str(&format!("{}\n", full_text));
+        }
     }
 
-    result
+    (with_addr, without_addr)
 }
 
 fn heap(uc: &Unicorn<()>) -> String {
@@ -527,8 +590,123 @@ fn arch_to_myarch(arch: Arch) -> MyArch {
     }
 }
 
+fn parse_disassembly_lines(code: &str, current_addr: u64) -> Vec<(String, String, bool)> {
+    let mut lines = Vec::new();
+    for line in code.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        
+        // Parse address from start of line (format: "0x1000: instruction...")
+        let (addr, instr) = if let Some(colon_idx) = trimmed.find(':') {
+            (trimmed[..colon_idx].to_string(), trimmed[colon_idx + 1..].trim().to_string())
+        } else if let Some(space_idx) = trimmed.find(|c: char| c.is_whitespace()) {
+            (trimmed[..space_idx].to_string(), trimmed[space_idx..].trim().to_string())
+        } else {
+            (trimmed.to_string(), String::new())
+        };
+        
+        // Check if this line's address matches the current instruction pointer
+        let is_current = if let Ok(line_addr) = u64::from_str_radix(addr.trim_start_matches("0x"), 16) {
+            line_addr == current_addr
+        } else {
+            false
+        };
+        
+        lines.push((addr, instr, is_current));
+    }
+    lines
+}
+
+fn code_view<'a>(state: &'a State) -> Element<'a, Message> {
+    // Get current instruction pointer based on architecture
+    let current_addr = match state.architecture {
+        Arch::X86 => state.unicorn.reg_read(RegisterX86::RIP).unwrap_or(0),
+        Arch::ARM64 => state.unicorn.reg_read(RegisterARM64::PC).unwrap_or(0),
+        _ => 0,
+    };
+    
+    let parsed_lines = parse_disassembly_lines(&state.code_with_addresses, current_addr);
+    
+    // Create address/pointer labels panel
+    let mut addr_col = Column::new();
+    for (addr, _, is_current) in &parsed_lines {
+        let cursor_text = if *is_current { "> " } else { "  " };
+        let cursor_color = if *is_current {
+            Color::from_rgb(0.95, 0.84, 0.35) // Yellow for active
+        } else {
+            Color::from_rgb(0.55, 0.65, 0.75) // Normal color
+        };
+        
+        let addr_row = row![
+            text(cursor_text.to_string())
+                .size(14)
+                .color(cursor_color)
+                .width(Length::Fixed(20.0)),
+            text(addr.clone())
+                .size(14)
+                .color(Color::from_rgb(0.55, 0.65, 0.75))
+                .width(Length::Fill)
+                .align_x(iced::alignment::Horizontal::Right),
+        ].align_y(Alignment::Center);
+        addr_col = addr_col.push(addr_row);
+    }
+    
+    let addr_panel = container(addr_col.spacing(2))
+        .padding(8)
+        .width(Length::Fixed(150.0))
+        .style(|_: &Theme| {
+            container::Style {
+                background: Some(iced::Background::Color(Color::from_rgb(0.13, 0.14, 0.2))),
+                ..Default::default()
+            }
+        });
+    
+    // Create editor panel with colored border
+    let _text_color = if state.code_is_valid {
+        Color::from_rgb(0.78, 0.82, 0.88)
+    } else {
+        Color::from_rgb(0.88, 0.5, 0.5)
+    };
+    
+    let border_color = if state.code_is_valid {
+        Color::from_rgb(0.3, 0.3, 0.35)
+    } else {
+        Color::from_rgb(0.85, 0.3, 0.3)
+    };
+    
+    let editor = text_editor::<_, Theme, _>(&state.code)
+        .on_action(Message::Edit)
+        .font(Font::MONOSPACE)
+        .line_height(iced::widget::text::LineHeight::Absolute(iced::Pixels(20.0)));
+    
+    let editor_container = container(editor)
+        .padding(8)
+        .style(move |_: &Theme| {
+            container::Style {
+                background: Some(iced::Background::Color(Color::from_rgb(0.13, 0.14, 0.2))),
+                border: Border {
+                    color: border_color,
+                    width: 2.0,
+                    radius: 2.0.into(),
+                },
+                ..Default::default()
+            }
+        });
+    
+    // Combine into row with addresses on left, editor on right
+    row![
+        addr_panel,
+        editor_container.width(Length::Fill),
+    ]
+    .spacing(8)
+    .into()
+}
+
 fn view(state: &State) -> Element<Message> {
     let can_save_registers = has_pending_register_edits(state);
+    let can_save_code = state.code_is_valid && code_has_changes(&state.code, &state.code_original);
 
     column![
         row![
@@ -544,10 +722,15 @@ fn view(state: &State) -> Element<Message> {
         ].padding(10).spacing(10).align_y(Alignment::Center),
         row![
             column![
-                row![text("Disassembled Code:").width(Length::Fill), button(text("Save"))]
+                row![text("Disassembled Code:").width(Length::Fill), 
+                    if can_save_code {
+                        button(text("Save")).on_press(Message::SaveCode)
+                    } else {
+                        button(text("Save"))
+                    },
+                ]
                 .spacing(10).align_y(Alignment::Center),
-                text_editor::<_, Theme, _>(&state.code)
-                    .on_action(Message::Edit),
+                code_view(state),
             ].width(Length::Fill).spacing(10),
             column![
                 row![
