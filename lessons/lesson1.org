@@ -1,0 +1,583 @@
+#+TITLE: Reverse-Engineering & Exploitation Fundamentals
+#+SUBTITLE: Cybermesterskaberne Training
+#+AUTHOR: Alessandro Bruni
+#+DATE: 2025
+#+BEAMER_THEME: default
+#+BEAMER_ASPECTRATIO: 169
+#+OPTIONS: toc:nil
+#+LATEX_HEADER: \usefonttheme{serif}\setbeamertemplate{navigation symbols}{}\setbeamertemplate{footline}{\includegraphics[width=.3\textwidth]{ITU_logo_UK.eps}}\setbeamercolor{frametitle}{bg=black, fg=white}\setbeamercolor{title}{bg=black, fg=white}
+
+* Who Am I
+
+Alessandro Bruni
+
+- Associate Professor at [[https://itu.dk/][ITU]]
+- I teach Discrete Math, Ethical Hacking, AI Security
+- Research software verification, to make sure that the software we build never fails
+- Applied to cyptographic protocols and artificial intelligence
+
+* Who Are You
+
+- Some programming experience (variables, loops, if-else, functions)
+- No security experience expected
+
+* Training Outline
+
+1. Assembly Basics (x86-64)
+2. Linux Reverse Engineering
+3. Buffer Overflows
+
+* What is Reverse-Engineering?
+
+#+BEGIN_QUOTE
+... the goal of a reverse engineering ... is to *understand the functionality* of a given program such that you can *identify deeper issues.*
+
+~ ctf101.org
+#+END_QUOTE
+
+* Is RE useful?
+
+Learning reverse-engineering *isn't* just for those juicy CTF points
+
+** Game Hacking
+Games are commonly closed-source and RE is required to understand their inner workings
+
+** Bug Hunting
+Reverse-engineering a software to understand how it works at a low-level allows us to uncover software bugs
+
+** Malware
+- Reverse-engineering operating systems to understand how to best create malware
+- Reverse-engineering malware itself
+
+* Assembly Language (x86-64)
+
+Let's start with building blocks ...
+
+#+ATTR_LATEX: :width 0.5\linewidth
+[[file:images/Blocks.png]]
+
+* How do programs run in the computer?
+
+* An analogy for the CPU
+
+Think of the CPU like a chef executing recipes
+
+#+ATTR_LATEX: :width 0.5\linewidth
+[[file:images/giphy.gif]]
+
+* An introduction to Bob
+
+Bob is our CPU - a hardworking chef who follows instructions
+
+#+ATTR_LATEX: :width 0.5\linewidth
+[[file:images/Bob.png]]
+
+* Bob can only understand
+
+... simple instructions
+
+#+BEGIN_SRC asm
+fill <bowl>, <ingredient/bowl>
+stir <bowl>
+chop <bowl>
+boil <bowl>, <time>
+#+END_SRC
+
+* Let's prepare fried rice!
+
+#+BEGIN_SRC asm
+; cook rice
+fill     A, rice
+fill     A, water
+boil     A, 18 minutes
+stir     A
+
+; ingredients
+fill     B, onions
+fill     B, carrots
+chop     B
+boil     B, peas
+
+; mix to fry
+fill     B, A
+#+END_SRC
+
+* Too verbose
+
+More complicated recipes would be way too tedious to write
+
+* The solution ... ?
+
+*Compilers!*
+
+* Let's welcome Alice
+
+Alice is much smarter than Bob
+
+#+ATTR_LATEX: :width 0.5\linewidth
+[[file:images/Alice.png]]
+
+* Alice is far smarter than Bob
+
+Alice can *compile* higher-level instructions into a format that *Bob* will be able to understand
+
+* Recipe Compilation
+
+** col1
+   :PROPERTIES:
+   :BEAMER_col: 0.45
+   :BEAMER_opt: [t]
+   :END:
+
+*** Alice's Recipe (High-Level)
+
+1. Boil rice for 18 minutes
+2. Chop onions and carrots
+3. Mix the onions, carrots and peas with the rice
+
+** col2
+   :PROPERTIES:
+   :BEAMER_col: 0.45
+   :BEAMER_opt: [t]
+   :END:
+
+*** Bob's Recipe (Low-Level)
+#+BEGIN_SRC asm
+; cook rice
+fill     A, rice
+fill     A, water
+boil     A, 18 minutes
+stir     A
+
+; ingredients
+fill     B, onions
+fill     B, carrots
+chop     B
+boil     B, peas
+
+; mix to fry
+fill     B, A
+#+END_SRC
+
+* The same is done for programs!
+
+* Program Compilation
+
+** col1
+   :PROPERTIES:
+   :BEAMER_col: 0.38
+   :BEAMER_opt: [t]
+   :END:
+
+*** Alice (High-Level C Code)
+#+BEGIN_SRC c
+int main(){
+    int a = 1337;
+    int b = 31337;
+    return a+b;
+}
+#+END_SRC
+
+** col2
+   :PROPERTIES:
+   :BEAMER_col: 0.58
+   :BEAMER_opt: [t]
+   :END:
+
+*** Bob (x86-64 Assembly)
+#+BEGIN_SRC asm
+push    rbp
+mov     rbp, rsp
+mov     DWORD PTR [rbp-4], 1337
+mov     DWORD PTR [rbp-8], 31337
+mov     edx, DWORD PTR [rbp-4]
+mov     eax, DWORD PTR [rbp-8]
+add     eax, edx
+pop     rbp
+ret
+#+END_SRC
+
+* Program Compilation (Labeled)
+
+** col1
+   :PROPERTIES:
+   :BEAMER_col: 0.38
+   :BEAMER_opt: [t]
+   :END:
+
+*** gcc/compiler (High-Level)
+#+BEGIN_SRC c
+int main(){
+    int a = 1337;
+    int b = 31337;
+    return a+b;
+}
+#+END_SRC
+
+** col2
+   :PROPERTIES:
+   :BEAMER_col: 0.58
+   :BEAMER_opt: [t]
+   :END:
+
+*** x86-64 cpu (Assembly)
+#+BEGIN_SRC asm
+push    rbp
+mov     rbp, rsp
+mov     DWORD PTR [rbp-4], 1337
+mov     DWORD PTR [rbp-8], 31337
+mov     edx, DWORD PTR [rbp-4]
+mov     eax, DWORD PTR [rbp-8]
+add     eax, edx
+pop     rbp
+ret
+#+END_SRC
+
+* Internally ...
+
+** col1
+   :PROPERTIES:
+   :BEAMER_col: 0.58
+   :BEAMER_opt: [t]
+   :END:
+
+*** x86-64 mnemonic
+#+BEGIN_SRC asm
+push    rbp
+mov     rbp, rsp
+mov     DWORD PTR [rbp-4], 1337
+mov     DWORD PTR [rbp-8], 31337
+mov     edx, DWORD PTR [rbp-4]
+mov     eax, DWORD PTR [rbp-8]
+add     eax, edx
+pop     rbp
+ret
+#+END_SRC
+
+** col2
+   :PROPERTIES:
+   :BEAMER_col: 0.38
+   :BEAMER_opt: [t]
+   :END:
+
+*** hex representation
+#+BEGIN_EXAMPLE
+55
+48 89 E5
+C7 45 FC 39 05 00 00
+C7 45 F8 69 7A 00 00
+8B 55 FC
+8B 45 F8
+01 D0
+5D
+C3
+#+END_EXAMPLE
+
+* What are instructions?
+
+* Flow of execution
+
+The CPU follows instructions sequentially, tracked by the instruction pointer (RIP)
+
+#+ATTR_LATEX: :width 0.5\linewidth
+[[file:images/Recipe.png]]
+
+* A simple snippet
+
+#+BEGIN_SRC asm
+push  rbp
+mov   rbp, rsp
+mov   [rbp-4], edi
+mov   [rbp-8], esi
+mov   edx, [rbp-4]
+mov   eax, [rbp-8]
+add   eax, edx
+pop   rbp
+ret
+#+END_SRC
+
+* Baby's first instruction!
+
+* nop
+
+** col1
+   :PROPERTIES:
+   :BEAMER_col: 0.45
+   :BEAMER_opt: [t]
+   :END:
+
+*** Syntax
+#+BEGIN_SRC asm
+nop
+#+END_SRC
+
+*** Functionality
+Does nothing.
+
+** col2
+   :PROPERTIES:
+   :BEAMER_col: 0.45
+   :BEAMER_opt: [t]
+   :END:
+
+*** Sample Code
+#+BEGIN_SRC asm
+nop
+nop
+nop
+#+END_SRC
+
+* A short tangent
+
+* What are registers and memory?
+
+* Continuing the analogy...
+
+Think of registers as bowls on a table that Bob (the CPU) uses to hold ingredients while cooking
+
+Memory is like a large pantry with many shelves
+
+#+ATTR_LATEX: :width 0.5\linewidth
+[[file:images/BowlTable.png]]
+
+* Memory
+
+Memory is organized into addresses, like a numbered table with slots for data
+
+#+ATTR_LATEX: :width 0.5\linewidth
+[[file:images/MemoryTable.png]]
+
+* mov
+
+** col1
+   :PROPERTIES:
+   :BEAMER_col: 0.45
+   :BEAMER_opt: [t]
+   :END:
+
+*** Syntax
+#+BEGIN_SRC asm
+mov <dst> <src>
+#+END_SRC
+
+*** Functionality
+"Moves" the value from ~<src>~ to ~<dst>~
+
+** col2
+   :PROPERTIES:
+   :BEAMER_col: 0.45
+   :BEAMER_opt: [t]
+   :END:
+
+*** Sample Code
+#+BEGIN_SRC asm
+mov     rax, 0x1337
+mov     rbx, 0x2022
+mov     rcx, rbx
+#+END_SRC
+
+* mov (memory)
+
+** Sample Code
+#+BEGIN_SRC asm
+mov rax, 0x1337
+mov rdx, 0x2000
+mov QWORD PTR [rdx], rax
+mov DWORD PTR [rdx+0x8], 0xdead
+#+END_SRC
+
+This demonstrates:
+- Moving values into memory addresses
+- Using pointer notation ~[rdx]~
+- Offset addressing ~[rdx+0x8]~
+
+* add/sub
+
+** col1
+   :PROPERTIES:
+   :BEAMER_col: 0.45
+   :BEAMER_opt: [t]
+   :END:
+
+*** Syntax
+#+BEGIN_SRC asm
+add <dst> <src>
+#+END_SRC
+
+*** Functionality
+Adds the value from ~<src>~ to ~<dst>~, result stored in ~<dst>~
+
+** col2
+   :PROPERTIES:
+   :BEAMER_col: 0.45
+   :BEAMER_opt: [t]
+   :END:
+
+*** Sample Code
+#+BEGIN_SRC asm
+mov     rax, 0x100
+mov     rbx, 0x200
+add     rax, rbx
+#+END_SRC
+
+* Mini Challenge #1
+
+Practice using mov and basic operations
+
+* Mini Challenge #2
+
+More complex operations combining multiple instructions
+
+* What about more complex code?
+
+* e.g.
+
+#+BEGIN_SRC c
+if(some_condition){
+    do_something();
+}
+else {
+    do_something_else();
+}
+#+END_SRC
+
+* jmp
+
+** col1
+   :PROPERTIES:
+   :BEAMER_col: 0.45
+   :BEAMER_opt: [t]
+   :END:
+
+*** Syntax
+#+BEGIN_SRC asm
+jmp <dst>
+#+END_SRC
+
+*** Functionality
+Jumps to execute code at ~<dst>~
+
+** col2
+   :PROPERTIES:
+   :BEAMER_col: 0.45
+   :BEAMER_opt: [t]
+   :END:
+
+*** Sample Code
+#+BEGIN_SRC asm
+mov     rax, 0x100
+jmp     skip
+mov     rax, 0x1337
+skip:
+nop
+nop
+#+END_SRC
+
+* cmp
+
+** col1
+   :PROPERTIES:
+   :BEAMER_col: 0.45
+   :BEAMER_opt: [t]
+   :END:
+
+*** Syntax
+#+BEGIN_SRC asm
+cmp <a>, <b>
+#+END_SRC
+
+*** Functionality
+Compares the values of ~<a>~ and ~<b>~ and sets ~EFLAGS~
+
+** col2
+   :PROPERTIES:
+   :BEAMER_col: 0.45
+   :BEAMER_opt: [t]
+   :END:
+
+*** Sample Code
+#+BEGIN_SRC asm
+mov     rax, 0x100
+mov     rbx, 0x200
+cmp     rax, rbx
+#+END_SRC
+
+* jmp (conditional)
+
+** col1
+   :PROPERTIES:
+   :BEAMER_col: 0.45
+   :BEAMER_opt: [t]
+   :END:
+
+*** Syntax
+#+BEGIN_SRC asm
+jcc <dst>
+#+END_SRC
+
+Where ~cc~ is a condition code (e.g., ~jl~, ~je~, ~jg~, etc.)
+
+*** Functionality
+Does a conditional jump to ~<dst>~ based on ~EFLAGS~
+
+** col2
+   :PROPERTIES:
+   :BEAMER_col: 0.45
+   :BEAMER_opt: [t]
+   :END:
+
+*** Sample Code
+#+BEGIN_SRC asm
+mov     rax, 0x100
+mov     rbx, 0x200
+cmp     rax, rbx
+mov     rcx, rax
+jl      rbx_lesser
+mov     rcx, rbx
+rbx_lesser:
+nop
+#+END_SRC
+
+This implements: if ~rax < rbx~ then skip setting ~rcx~ to ~rbx~
+
+* call
+
+** col1
+   :PROPERTIES:
+   :BEAMER_col: 0.45
+   :BEAMER_opt: [t]
+   :END:
+
+*** Syntax
+#+BEGIN_SRC asm
+call <dst>
+#+END_SRC
+
+*** Functionality
+Calls the function located at ~<dst>~
+
+** col2
+   :PROPERTIES:
+   :BEAMER_col: 0.45
+   :BEAMER_opt: [t]
+   :END:
+
+*** Sample Code
+#+BEGIN_SRC asm
+nop
+call    foo
+hlt
+foo:
+mov     rax, 0x1337
+ret
+nop
+#+END_SRC
+
+The ~call~ instruction:
+1. Pushes the return address onto the stack
+2. Jumps to the function
+3. ~ret~ pops the return address and jumps back
+
+* Mini Challenge #3
+
+Practice using conditional jumps and function calls

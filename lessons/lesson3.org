@@ -1,0 +1,596 @@
+#+TITLE: Buffer Overflows
+#+SUBTITLE: Cybermesterskaberne Training
+#+AUTHOR: Alessandro Bruni
+#+DATE: 2025
+#+BEAMER_THEME: default
+#+BEAMER_ASPECTRATIO: 169
+#+OPTIONS: toc:nil
+
+#+ATTR_LATEX: :width 0.5\linewidth
+[[file:images/Boat.png]]
+
+* What's been covered
+
+x86-64 assembly, Linux reverse-engineering!
+
+* Time to weaponise our knowledge
+
+🕶️ Let's learn how to exploit vulnerabilities
+
+#+ATTR_LATEX: :width 0.5\linewidth
+[[file:images/footagecrate-emojicooldude-prev-full.png]]
+
+* What is exploitation?
+
+#+BEGIN_QUOTE
+Binary exploitation is a broad topic within cybersecurity that comes down to finding a vulnerability in the program and exploiting it to ... modify the program's functions
+
+~ infosecwriteups.com
+#+END_QUOTE
+
+* A vulnerability as old as time
+
+Buffer overflows have been around since the early days of computing
+
+#+ATTR_LATEX: :width 0.5\linewidth
+[[file:images/hack-the-planet.gif]]
+
+* Let's try to understand
+
+*Buffer overflows*
+
+* Revisiting the stack
+
+* Example #1
+
+** Simple Stack Operations
+#+BEGIN_SRC asm
+mov rax, 1000
+mov rbx, 2000
+push rax
+push rbx
+pop  rcx
+pop  rdx
+#+END_SRC
+
+Result:
+- ~rcx~ = 2000 (last pushed)
+- ~rdx~ = 1000 (first pushed)
+
+* Example #2
+
+** Function with Local Variables
+#+BEGIN_SRC asm
+foo:
+push   rbp
+mov    rbp, rsp
+sub    rsp, 0x10
+mov    DWORD PTR [rbp-0xc], 0x3e8
+mov    DWORD PTR [rbp-0x8], 0x7d0
+mov    DWORD PTR [rbp-0x4], 0xbb8
+mov    edx, DWORD PTR [rbp-0xc]
+mov    eax, DWORD PTR [rbp-0x8]
+add    edx, eax
+mov    eax, DWORD PTR [rbp-0x4]
+add    eax, edx
+leave
+ret
+#+END_SRC
+
+This demonstrates local variable storage on the stack
+
+* With the stack, each function call maintains its local state!
+
+* Stack Frame Layout
+
+Each function call creates a stack frame containing:
+- Local variables
+- Saved base pointer (RBP)
+- Return address
+- Function parameters (if needed)
+
+#+ATTR_LATEX: :width 0.5\linewidth
+[[file:images/Call_stack_layout.png]]
+
+#+BEGIN_EXAMPLE
+        High Address
+    +------------------+
+    | Previous Frame   |
+    +------------------+
+    | Return Address   |  ← Saved by call instruction
+    +------------------+
+    | Saved RBP        |  ← Pushed by function prologue
+    +------------------+ ← RBP points here
+    | Local Variable 1 |
+    +------------------+
+    | Local Variable 2 |
+    +------------------+
+    | ...              |
+    +------------------+ ← RSP points here
+        Low Address
+#+END_EXAMPLE
+
+* function stacks
+
+#+BEGIN_SRC asm
+main:
+  push  rbp
+  mov   rbp, rsp
+  mov   eax, 0
+  call  a
+  nop
+  pop   rbp
+  ret
+
+a:
+  push  rbp
+  mov   rbp, rsp
+  sub   rsp, 16
+  mov   DWORD PTR [rbp-4], 0xAAAA
+  mov   eax, 0
+  call  b
+  nop
+  leave
+  ret
+
+b:
+  push  rbp
+  mov   rbp, rsp
+  mov   DWORD PTR [rbp-4], 0xBBBB
+  nop
+  pop   rbp
+  ret
+#+END_SRC
+
+Multiple stack frames exist simultaneously during nested function calls
+
+* Are locals protected from each other?
+
+* Consider the following:
+
+#+BEGIN_SRC c
+int foo(int index, int val) {
+    int arr[4] = {1, 2, 3, 4};
+    int untouched = 0x1337;
+    arr[index] = val;
+    return untouched;
+}
+
+void main() {
+    foo(0, 0xdead);
+}
+#+END_SRC
+
+What happens when we access ~arr[0]~? Normal operation.
+
+* Function locals Demo
+
+#+BEGIN_SRC asm
+main:
+  push   rbp
+  mov    rbp, rsp
+  mov    esi, 0xdead
+  mov    edi, 0
+  call   foo
+  nop
+  pop    rbp
+  ret
+
+foo:
+  push   rbp
+  mov    rbp, rsp
+  sub    rsp, 48
+  mov    DWORD PTR [rbp-36], edi
+  mov    DWORD PTR [rbp-40], esi
+  mov    DWORD PTR [rbp-32], 1
+  mov    DWORD PTR [rbp-28], 2
+  mov    DWORD PTR [rbp-24], 3
+  mov    DWORD PTR [rbp-20], 4
+  mov    DWORD PTR [rbp-4], 0x1337
+  mov    eax, DWORD PTR [rbp-36]
+  cdqe
+  mov    edx, DWORD PTR [rbp-40]
+  mov    DWORD PTR [rbp-32+rax*4], edx
+  mov    eax, DWORD PTR [rbp-4]
+  leave
+  ret
+#+END_SRC
+
+* What if we went out of bounds?
+
+#+BEGIN_SRC c
+int foo(int index, int val) {
+    int arr[4] = {1, 2, 3, 4};
+    int untouched = 0x1337;
+    arr[index] = val;
+    return untouched;
+}
+
+void main() {
+    foo(7, 0xdead);  // Out of bounds!
+}
+#+END_SRC
+
+Now we're writing past the end of the array...
+
+* Out of bounds locals Demo
+
+Using the same assembly as before, but with ~index = 7~:
+
+This writes to ~[rbp-32+7*4]~ = ~[rbp-4]~
+
+Which is exactly where ~untouched~ is stored!
+
+Result: ~untouched~ gets overwritten with ~0xdead~
+
+* Hold on, this isn't a *buffer* overflow
+
+🤔 True, this is more of an array index vulnerability
+
+#+ATTR_LATEX: :width 0.5\linewidth
+[[file:images/726046300881289248.png]]
+
+Let's look at actual buffer overflows...
+
+* Consider the following:
+
+#+BEGIN_SRC c
+int main() {
+    char buf[16];
+    int untouched = 0xdead;
+    gets(buf);
+    return untouched;
+}
+#+END_SRC
+
+The ~gets()~ function reads input without bounds checking!
+
+* Buffer overflow (variable)
+
+#+BEGIN_SRC asm
+main:
+  push rbp
+  mov  rbp, rsp
+  sub  rsp, 32
+  mov  DWORD PTR [rbp-4], 0xdead
+  lea  rax, [rbp-32]
+  mov  rdi, rax
+  call gets
+  mov  eax, DWORD PTR [rbp-4]
+  leave
+  ret
+
+gets:
+  mov  rdx, 0
+  mov  rsi, 0x1000
+gets_loop:
+  cmp  BYTE PTR [rsi+rdx], 0
+  je   gets_end
+  mov  al, BYTE PTR [rsi+rdx]
+  mov  BYTE PTR [rdi+rdx], al
+  add  rdx, 1
+  jmp  gets_loop
+gets_end:
+  ret
+#+END_SRC
+
+If we input more than 16 bytes, we overflow into ~untouched~!
+
+* Pretty cool!
+
+We can overwrite variables... but can we do more?
+
+* Stack Frame with Return Address
+
+#+BEGIN_EXAMPLE
+        High Address
+    +------------------+
+    | Previous Frame   |
+    +------------------+
+    | Return Address   |  ← What if we overwrite this?
+    +------------------+
+    | Saved RBP        |
+    +------------------+ ← RBP
+    | buf[16]          |
+    +------------------+
+    | untouched        |
+    +------------------+ ← RSP
+        Low Address
+#+END_EXAMPLE
+
+* What happens when we overwrite saved rip
+
+The saved instruction pointer (RIP) tells CPU where to return after function ends
+
+If we overwrite it, we control program execution!
+
+#+ATTR_LATEX: :width 0.5\linewidth
+[[file:images/Call_stack_layout.png]]
+
+* Code with Controllable Return
+
+#+BEGIN_SRC c
+int foo(int index, int val) {
+    int arr[4] = {1, 2, 3, 4};
+    int untouched = 0x1337;
+    arr[index] = val;
+    return untouched;
+}
+
+void main() {
+    foo(?, 0xdead);  // What index overwrites saved RIP?
+}
+#+END_SRC
+
+Need to calculate offset from array to saved RIP
+
+* Overwrite saved rip (OOB)
+
+Using the previous assembly example:
+- Array starts at ~[rbp-32]~
+- Saved RBP at ~[rbp]~
+- Saved RIP at ~[rbp+8]~
+
+To overwrite saved RIP from array: ~index = (32+8)/4 = 10~
+
+* Code with Buffer Overflow
+
+#+BEGIN_SRC c
+int main() {
+    char buf[16];
+    int untouched = 0xdead;
+    gets(buf);
+    return untouched;
+}
+#+END_SRC
+
+Input more than 28 bytes to reach saved RIP:
+- 16 bytes for buf
+- 4 bytes for untouched
+- 4 bytes padding
+- 8 bytes saved RBP
+- Next 8 bytes = saved RIP
+
+* Overwrite saved rip (Buffer)
+
+Input structure to hijack control:
+#+BEGIN_EXAMPLE
+[16 bytes buf][4 bytes untouched][4 padding][8 bytes saved RBP][8 bytes NEW RIP]
+#+END_EXAMPLE
+
+The NEW RIP value determines where execution goes after function returns!
+
+* 🎯 Control Flow Hijacked
+
+We now control where the program jumps!
+
+* Where to now?
+
+What can we do with control of the instruction pointer?
+
+* Any h4x in real life?
+
+Yes! Let's look at a real vulnerability...
+
+* CVE-2015-7504
+
+*Heap-based buffer overflow* in the ~pcnet_receive~ function in ~hw/net/pcnet.c~ in QEMU allows guest OS administrators to cause a denial of service (instance crash) or *possibly execute arbitrary code* via a series of packets in loopback mode.
+
+* QEMU is a free and open-source hypervisor
+
+- Normally used to run different guest operating systems, e.g. IOT firmware, Linux
+- Emulating other CPU architectures, e.g. ARM, MIPS
+
+* Vulnerability in the AMD PCNET network card emulator
+
+This piece of code in ~pcnet_receive~ appends a CRC checksum to the end of a packet.
+
+#+BEGIN_SRC c
+uint8_t *src = s->buffer;  /* this is the packet */
+
+/* ... */
+else if (s->looptest == PCNET_LOOPTEST_CRC ||
+         !CSR_DXMTFCS(s) || size < MIN_BUF_SIZE+4) {  /* just one of these conditions need to be true */
+    uint32_t fcs = ~0;              /* the accumulated checksum */
+    uint8_t *p = src;
+
+    /* go through the packet byte by byte, and keep updating the checksum */
+    while (p != &src[size])         /* stop after reading up to the given size */
+        CRC(fcs, *p++);             /* update fcs with the CRC checksum, also increments p */
+
+    *(uint32_t *)p = htonl(fcs);    /* save the checksum at the end of the packet */
+
+    size += 4;
+}
+#+END_SRC
+
+Hmm, everything looks ok so far?
+
+* PCNetState structure
+
+#+BEGIN_SRC c
+struct PCNetState_st {
+    NICState *nic;
+    NICConf conf;
+    QEMUTimer *poll_timer;
+    int rap, isr, lnkst;
+    uint32_t rdra, tdra;
+    uint8_t prom[16];
+    uint16_t csr[128];
+    uint16_t bcr[32];
+    int xmit_pos;
+    uint64_t timer;
+    MemoryRegion mmio;
+    uint8_t buffer[4096];          /* the packet */
+    qemu_irq irq;                  /* can we write the checksum into here 🤔 */
+    void (*phys_mem_read)(void *dma_opaque, hwaddr addr,
+                          uint8_t *buf, int len, int do_bswap);
+    void (*phys_mem_write)(void *dma_opaque, hwaddr addr,
+                           uint8_t *buf, int len, int do_bswap);
+    void *dma_opaque;
+    int tx_busy;
+    int looptest;
+};
+#+END_SRC
+
+This is the structure of ~s~ in the previous slide
+
+Btw, the program accepts a packet (~buffer~) with ~size~ of 4kB (~4096~ bytes) 😏
+
+* IRQState structure
+
+#+BEGIN_SRC c
+typedef void (*qemu_irq_handler)(void *opaque, int n, int level);
+
+struct IRQState {
+    Object parent_obj;
+    qemu_irq_handler handler;
+    void *opaque;
+    int n;
+};
+#+END_SRC
+
+#+BEGIN_SRC c
+typedef struct IRQState *qemu_irq;
+#+END_SRC
+
+#+BEGIN_SRC c
+struct PCNetState_st {
+    /* ... */
+    uint8_t buffer[4096];          /* the packet */
+    qemu_irq irq;                  /* can we write the checksum into here 🤔 */
+    /* ... */
+};
+#+END_SRC
+
+~qemu_irq~ is a pointer to an ~IRQState~
+
+Importantly, there is a function pointer (~qemu_irq_handler handler~) in an ~IRQState~
+
+* When is handler used?
+
+A few times... e.g. ~pcnet_receive → pcnet_update_irq → qemu_set_irq~
+
+#+BEGIN_SRC c
+void qemu_set_irq(qemu_irq irq, int level)
+{
+    if (!irq)
+        return;
+
+    irq->handler(irq->opaque, irq->n, level);
+}
+#+END_SRC
+
+So, what if we can control ~handler~?
+
+* To summarize what is going on
+
+Attacker sends a packet of ~4096~ bytes
+
+#+BEGIN_EXAMPLE
+/*
+*     pcnet_receive()
+* appends checksum to end of Buffer
+*           |
+*           |
+* if buffer size is 4096
+*           |           PCNetState_st
+*           |             +--------+
+* write the checksum      |  ...   |
+*    out-of-bounds        +--------+
+*           |             | buffer |
+*           |             +--------+
+*           +------------>|  irq   +----+        IRQState
+*                         +--------+    |       +---------+
+*                         |  ...   |    |       |   ...   |
+*                         +--------+    |       +---------+
+*                                       +------>| handler |
+*                                               +---------+
+*                                               |   ...   |
+*                                               +---------+
+*/
+#+END_EXAMPLE
+
+The ~irq~ field is overwritten
+
+* Exploit Strategy
+
+The attacker can create a fake ~IRQState~ somewhere in memory. Then, set the packet contents so that its *checksum* is the address of the fake ~IRQState~
+
+#+BEGIN_EXAMPLE
+/*
+*     pcnet_receive()
+* appends checksum to end of buffer
+*           |                                     Fake IRQState
+*           |                                    +--------------+
+* if buffer size is 4096                         |     ...      |
+*           |           PCNetState_st            +--------------+
+*           |             +--------+    +------->|   handler    |
+* write the checksum      |  ...   |    |        +--------------+
+*    out-of-bounds        +--------+    |        |     ...      |
+*           |             | buffer |    |        +--------------+
+*           |             +--------+    |
+*           +------------>|  irq   +----+        IRQState
+*                         +--------+    x       +---------+
+*                         |  ...   |    x       |   ...   |
+*                         +--------+    |       +---------+
+*                                       +------>| handler |
+*                                               +---------+
+*                                               |   ...   |
+*                                               +---------+
+*/
+#+END_EXAMPLE
+
+The ~handler~ field is now attacker-controlled
+
+* Arbitrary Code Execution
+
+At the end of ~pcnet_receive~, it calls ~pcnet_update_irq~, which calls ~qemu_set_irq~, which calls the attacker-controlled ~handler~
+
+#+BEGIN_EXAMPLE
+/*
+*                                                                            pcnet_receive
+*                                                                                 |
+*     pcnet_receive()                                                             v
+* appends checksum to end of buffer                                         pcnet_update_irq
+*           |                                     Fake IRQState                   |
+*           |                                    +--------------+                 v
+* if buffer size is 4096                         |     ...      |            qemu_set_irq
+*           |           PCNetState_st            +--------------+                 |
+*           |             +--------+    +------->|   handler    |<----------------+
+* write the checksum      |  ...   |    |        +--------------+
+*    out-of-bounds        +--------+    |        |     ...      |
+*           |             | buffer |    |        +--------------+
+*           |             +--------+    |
+*           +------------>|  irq   +----+        IRQState
+*                         +--------+    x       +---------+
+*                         |  ...   |    x       |   ...   |
+*                         +--------+    |       +---------+
+*                                       +------>| handler |
+*                                               +---------+
+*                                               |   ...   |
+*                                               +---------+
+*/
+#+END_EXAMPLE
+
+Attacker now has arbitrary code execution
+
+* But how does the attacker know the address?
+
+Erm, but how does the attacker know the address of the fake ~IRQState~?
+
+Need to chain this bug with a memory leak vulnerability, e.g. out-of-bounds read/copy
+
+* For more information
+
+For more detailed info, check out this [[http://www.phrack.org/issues/70/5.html][Phrack article]]
+
+* Summary
+
+Buffer overflows allow attackers to:
+1. Overwrite local variables
+2. Overwrite saved return addresses
+3. Control program execution flow
+4. Achieve arbitrary code execution
+
+Real-world impact: Guest-to-host VM escape in QEMU!

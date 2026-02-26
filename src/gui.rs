@@ -1,6 +1,8 @@
 use std::vec;
 use std::fmt;
 use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
 
 use iced::widget::{column, row, button, pick_list, text, text_editor, text_input, container, tooltip, mouse_area, Column};
 use iced::{Element, Theme, Alignment, Length, Font, Color, Border};
@@ -8,11 +10,25 @@ use iced::widget::tooltip::Position;
 
 use unicorn_engine::*;
 use capstone::prelude::*;
+use keystone::{Keystone, MODE_ARM, MODE_64};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MyArch {
     X86,
     ARM,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Snippet {
+    name: String,
+    path: PathBuf,
+    lesson: String,
+}
+
+impl fmt::Display for Snippet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} - {}", self.lesson, self.name)
+    }
 }
 
 struct State {
@@ -26,6 +42,8 @@ struct State {
     code_is_valid: bool,
     heap: text_editor::Content,
     stack: text_editor::Content,
+    snippets: Vec<Snippet>,
+    selected_snippet: Option<Snippet>,
 }
 
 const HEXBIN_X86 : &str = "554889e5897dfc8b45fc0fafc05dc3";
@@ -77,11 +95,58 @@ impl Default for State {
             code_is_valid: true,
             heap: text_editor::Content::with_text(&heap),
             stack: text_editor::Content::with_text(&stack),
+            snippets: load_snippets(),
+            selected_snippet: None,
         };
 
         sync_register_inputs(&mut state);
         state
     }
+}
+
+fn load_snippets() -> Vec<Snippet> {
+    let mut snippets = Vec::new();
+    let base_path = PathBuf::from("lessons/code_snippets");
+    
+    if !base_path.exists() {
+        return snippets;
+    }
+    
+    for lesson in &["lesson1", "lesson2", "lesson3"] {
+        let lesson_path = base_path.join(lesson);
+        if !lesson_path.exists() {
+            continue;
+        }
+        
+        if let Ok(entries) = fs::read_dir(&lesson_path) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) == Some("s") {
+                    if let Some(filename) = path.file_stem().and_then(|s| s.to_str()) {
+                        let name = filename
+                            .split('_')
+                            .skip(1)  // Skip the number prefix
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                            .replace("_", " ");
+                        
+                        snippets.push(Snippet {
+                            name: name.clone(),
+                            path: path.clone(),
+                            lesson: lesson.to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    
+    snippets.sort_by(|a, b| {
+        a.lesson.cmp(&b.lesson)
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    
+    snippets
 }
 
 #[derive(Debug, Clone)]
@@ -97,6 +162,7 @@ enum Message {
     SaveRegisters,
     SaveCode,
     SelectArchitecture(MyArch),
+    LoadSnippet(Snippet),
 }
 
 fn reset_state(state: &mut State) {
@@ -146,6 +212,7 @@ fn reset_state(state: &mut State) {
     state.stack = text_editor::Content::with_text(&stack);
 
     state.changed_registers.clear();
+    state.selected_snippet = None;
     sync_register_inputs(state);
 }
 
@@ -253,28 +320,6 @@ fn has_pending_register_edits(state: &State) -> bool {
     false
 }
 
-fn validate_assembly_code(code: &str, _arch: Arch) -> bool {
-    // Simple validation: check if code contains non-empty lines that look like assembly
-    // A more complete implementation would use Keystone to actually assemble
-    let mut has_instructions = false;
-    for line in code.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with("->") && trimmed[2..].trim().is_empty() {
-            continue;
-        }
-        // Remove cursor and check if line contains instruction-like content
-        let instruction = if trimmed.starts_with("->") {
-            &trimmed[2..].trim_start()
-        } else {
-            &trimmed[3..].trim_start()
-        };
-        if !instruction.is_empty() && instruction.len() > 2 {
-            has_instructions = true;
-        }
-    }
-    has_instructions
-}
-
 fn code_has_changes(code: &text_editor::Content, original: &str) -> bool {
     code.text() != original
 }
@@ -293,10 +338,6 @@ fn update(state: &mut State, message: Message) {
                 reset_state(state);
                 return;
             }
-
-            let (code_with_addr, code_without_addr) = disassemble(&state.unicorn);
-            state.code = text_editor::Content::with_text(&code_without_addr);
-            state.code_with_addresses = code_with_addr;
 
             let heap = heap(&state.unicorn);
             state.heap = text_editor::Content::with_text(&heap);
@@ -378,10 +419,6 @@ fn update(state: &mut State, message: Message) {
                 }
             }
 
-            let (code_with_addr, code_without_addr) = disassemble(&state.unicorn);
-            state.code = text_editor::Content::with_text(&code_without_addr);
-            state.code_with_addresses = code_with_addr;
-
             let heap = heap(&state.unicorn);
             state.heap = text_editor::Content::with_text(&heap);
 
@@ -391,8 +428,6 @@ fn update(state: &mut State, message: Message) {
         },
         Message::Edit(action) => {
             state.code.perform(action);
-            // Validate the code after editing
-            state.code_is_valid = validate_assembly_code(&state.code.text(), state.architecture);
         },
         Message::EditHeap(action) => {
             state.heap.perform(action);
@@ -427,13 +462,16 @@ fn update(state: &mut State, message: Message) {
             sync_register_inputs(state);
         },
         Message::SaveCode => {
-            if !state.code_is_valid {
-                return;
+            // Assemble the code to memory
+            if assemble(&mut state.unicorn, &state.code.text()) {
+                // Update the disassembly view to show what was assembled
+                let (code_with_addr, _) = disassemble(&state.unicorn);
+                state.code_with_addresses = code_with_addr;
+                state.code_original = state.code.text().clone();
+                state.code_is_valid = true;
+            } else {
+                state.code_is_valid = false;
             }
-            
-            // For now, just update the tracking to mark code as saved
-            // Full assembly compilation would go here with Keystone
-            state.code_original = state.code.text().clone();
         },
         Message::SelectArchitecture(arch) => {
             state.architecture = myarch_to_arch(arch);
@@ -488,7 +526,92 @@ fn update(state: &mut State, message: Message) {
             state.changed_registers.clear();
             sync_register_inputs(state);
         },
+        Message::LoadSnippet(snippet) => {
+            // Read the snippet file
+            if let Ok(content) = fs::read_to_string(&snippet.path) {
+                // Extract assembly instructions (skip directives)
+                let asm_code = extract_assembly_instructions(&content);
+                
+                // Assemble the code
+                if let Some(binary) = assemble_code(&asm_code, state.architecture) {
+                    // Reinitialize emulator with new code
+                    let binary_len = ((binary.len() + 0xFFF) / 0x1000) * 0x1000;
+                    let mode = match state.architecture {
+                        Arch::X86 => Mode::MODE_64,
+                        Arch::ARM64 => Mode::ARM,
+                        _ => panic!("Unsupported architecture"),
+                    };
+                    
+                    state.unicorn = Unicorn::new(state.architecture, mode)
+                        .expect("Failed to initialize Unicorn engine");
+                    state.unicorn.mem_map(0x2000, 0x1000, Prot::ALL)
+                        .expect("Failed to map stack memory");
+                    state.unicorn.mem_map(0x3000, 0x1000, Prot::ALL)
+                        .expect("Failed to map heap memory");
+                    state.unicorn.mem_map(0x1000, binary_len as u64, Prot::ALL)
+                        .expect("Failed to map binary memory");
+                    state.unicorn.mem_write(0x1000, &binary)
+                        .expect("Failed to write binary to memory");
+                    
+                    // Initialize registers
+                    match state.architecture {
+                        Arch::X86 => {
+                            state.unicorn.reg_write(RegisterX86::RSP, 0x2000 + 0x1000)
+                                .expect("Failed to set stack pointer");
+                            state.unicorn.reg_write(RegisterX86::RBP, 0x2000 + 0x1000)
+                                .expect("Failed to set base pointer");
+                            state.unicorn.reg_write(RegisterX86::RIP, 0x1000)
+                                .expect("Failed to set instruction pointer");
+                            state.unicorn.reg_write(RegisterX86::RDI, 10).unwrap();
+                        },
+                        Arch::ARM64 => {
+                            state.unicorn.reg_write(RegisterARM64::SP, 0x2000 + 0x1000)
+                                .expect("Failed to set stack pointer");
+                            state.unicorn.reg_write(RegisterARM64::PC, 0x1000)
+                                .expect("Failed to set instruction pointer");
+                            state.unicorn.reg_write(RegisterARM64::X0, 10).unwrap();
+                        },
+                        _ => panic!("Unsupported architecture"),
+                    }
+                    
+                    // Update UI
+                    let (code_with_addr, code_without_addr) = disassemble(&state.unicorn);
+                    state.code = text_editor::Content::with_text(&code_without_addr);
+                    state.code_with_addresses = code_with_addr;
+                    state.code_original = code_without_addr;
+                    
+                    let heap = heap(&state.unicorn);
+                    state.heap = text_editor::Content::with_text(&heap);
+                    
+                    let stack = stack(&state.unicorn);
+                    state.stack = text_editor::Content::with_text(&stack);
+                    
+                    state.changed_registers.clear();
+                    sync_register_inputs(state);
+                    state.selected_snippet = Some(snippet);
+                }
+            }
+        },
     }
+}
+
+fn extract_assembly_instructions(content: &str) -> String {
+    content
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            // Skip empty lines, comments, and assembler directives
+            !trimmed.is_empty() 
+                && !trimmed.starts_with('#')
+                && !trimmed.starts_with('.')
+                && !trimmed.starts_with("_main:")
+                && !trimmed.starts_with("_foo:")
+                && !trimmed.starts_with("_bar:")
+                && !trimmed.starts_with("_level")
+                && !trimmed.ends_with(':')  // Skip all labels
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn myarch_to_arch(arch: MyArch) -> Arch {
@@ -554,6 +677,114 @@ fn disassemble_arm(uc: &Unicorn<()>) -> (String, String) {
     }
 
     (with_addr, without_addr)
+}
+
+fn assemble(uc: &mut Unicorn<()>, code: &str) -> bool {
+    match uc.get_arch() {
+        Arch::X86 => assemble_x86(uc, code),
+        Arch::ARM64 => assemble_arm(uc, code),
+        _ => panic!("Unsupported architecture"),
+    }
+}
+
+fn assemble_code(code: &str, arch: Arch) -> Option<Vec<u8>> {
+    match arch {
+        Arch::X86 => assemble_code_x86(code),
+        Arch::ARM64 => assemble_code_arm(code),
+        _ => None,
+    }
+}
+
+fn assemble_code_x86(code: &str) -> Option<Vec<u8>> {
+    let ks = Keystone::new(keystone::Arch::X86, MODE_64).ok()?;
+    
+    // Filter out empty lines and format code for assembly
+    let instructions: Vec<&str> = code
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty() && !l.starts_with("->"))
+        .collect();
+
+    let code_str = instructions.join("; ");
+    
+    match ks.asm(code_str, 0x1000) {
+        Ok(result) if !result.bytes.is_empty() => Some(result.bytes),
+        _ => None,
+    }
+}
+
+fn assemble_code_arm(code: &str) -> Option<Vec<u8>> {
+    let ks = Keystone::new(keystone::Arch::ARM64, MODE_ARM).ok()?;
+    
+    // Filter out empty lines and format code for assembly
+    let instructions: Vec<&str> = code
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty() && !l.starts_with("->"))
+        .collect();
+
+    let code_str = instructions.join("; ");
+    
+    match ks.asm(code_str, 0x1000) {
+        Ok(result) if !result.bytes.is_empty() => Some(result.bytes),
+        _ => None,
+    }
+}
+
+fn assemble_x86(uc: &mut Unicorn<()>, code: &str) -> bool {
+    let ks = match Keystone::new(keystone::Arch::X86, MODE_64) {
+        Ok(k) => k,
+        Err(_) => return false,
+    };
+
+    // Filter out empty lines and format code for assembly
+    let instructions: Vec<&str> = code
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty() && !l.starts_with("->"))
+        .collect();
+
+    let code_str = instructions.join("; ");
+    
+    match ks.asm(code_str, 0x1000) {
+        Ok(result) => {
+            if !result.bytes.is_empty() {
+                let _ = uc.mem_write(0x1000, &result.bytes);
+                true
+            } else {
+                false
+            }
+        },
+        _ => false,
+    }
+}
+
+fn assemble_arm(uc: &mut Unicorn<()>, code: &str) -> bool {
+    let ks = match Keystone::new(keystone::Arch::ARM64, MODE_ARM) {
+        Ok(k) => k,
+        Err(_) => return false,
+    };
+
+    // Filter out empty lines and format code for assembly
+    let instructions: Vec<&str> = code
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty() && !l.starts_with("->"))
+        .collect();
+
+    let code_str = instructions.join("; ");
+    
+    match ks.asm(code_str, 0x1000) {
+        Ok(result) => {
+            if !result.bytes.is_empty() {
+                let _ = uc.mem_write(0x1000, &result.bytes);
+                true
+            } else {
+                false
+            }
+        },
+        _ => false,
+    }
 }
 
 fn heap(uc: &Unicorn<()>) -> String {
@@ -673,7 +904,7 @@ fn code_view<'a>(state: &'a State) -> Element<'a, Message> {
     let border_color = if state.code_is_valid {
         Color::from_rgb(0.3, 0.3, 0.35)
     } else {
-        Color::from_rgb(0.85, 0.3, 0.3)
+        Color::from_rgb(1.0, 0.2, 0.2)
     };
     
     let editor = text_editor::<_, Theme, _>(&state.code)
@@ -715,6 +946,12 @@ fn view(state: &State) -> Element<'_, Message> {
             Some(arch_to_myarch(state.architecture)),
             Message::SelectArchitecture,
         ),
+        text("Load Snippet:"),
+        pick_list(
+            &state.snippets[..],
+            state.selected_snippet.clone(),
+            Message::LoadSnippet,
+        ).width(Length::Fixed(250.0)),
         button(text("Execute")).on_press(Message::Execute),
         button(text("Restart")).on_press(Message::Restart),
         button(text("Step")).on_press(Message::Step),
@@ -814,55 +1051,6 @@ fn theme(_state: &State) -> Theme {
 
 fn window_title(_state: &State) -> String {
     String::from("Unicorn Engine GUI")
-}
-
-// Helper function to convert u8 to RegisterX86
-fn u8_to_register_x86(id: u8) -> RegisterX86 {
-    match id {
-        0x00 => RegisterX86::RAX,
-        0x01 => RegisterX86::RCX,
-        0x02 => RegisterX86::RDX,
-        0x03 => RegisterX86::RBX,
-        0x04 => RegisterX86::RSP,
-        0x05 => RegisterX86::RBP,
-        0x06 => RegisterX86::RSI,
-        0x07 => RegisterX86::RDI,
-        0x08 => RegisterX86::R8,
-        0x09 => RegisterX86::R9,
-        0x0a => RegisterX86::R10,
-        0x0b => RegisterX86::R11,
-        0x0c => RegisterX86::R12,
-        0x0d => RegisterX86::R13,
-        0x0e => RegisterX86::R14,
-        0x0f => RegisterX86::R15,
-        0x10 => RegisterX86::RIP,
-        _ => RegisterX86::RAX,
-    }
-}
-
-// Helper function to convert u8 to RegisterARM64
-fn u8_to_register_arm64(id: u8) -> RegisterARM64 {
-    match id {
-        0x00 => RegisterARM64::X0,
-        0x01 => RegisterARM64::X1,
-        0x02 => RegisterARM64::X2,
-        0x03 => RegisterARM64::X3,
-        0x04 => RegisterARM64::X4,
-        0x05 => RegisterARM64::X5,
-        0x06 => RegisterARM64::X6,
-        0x07 => RegisterARM64::X7,
-        0x08 => RegisterARM64::X8,
-        0x09 => RegisterARM64::X9,
-        0x0a => RegisterARM64::X10,
-        0x0b => RegisterARM64::X11,
-        0x0c => RegisterARM64::X12,
-        0x0d => RegisterARM64::X13,
-        0x0e => RegisterARM64::X14,
-        0x0f => RegisterARM64::X15,
-        0x20 => RegisterARM64::SP,
-        0x21 => RegisterARM64::PC,
-        _ => RegisterARM64::X0,
-    }
 }
 
 fn register_view<'a>(state: &'a State) -> Element<'a, Message> {

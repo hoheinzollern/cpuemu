@@ -1,0 +1,451 @@
+#+TITLE: Linux Reverse-Engineering
+#+SUBTITLE: Cybermesterskaberne Training
+#+AUTHOR: Alessandro Bruni
+#+DATE: 2025
+#+BEAMER_THEME: default
+#+BEAMER_ASPECTRATIO: 169
+#+OPTIONS: toc:nil
+
+* What's been covered
+
+x86-64 assembly, compilation, basic instructions
+
+* How do we distribute/store such code?
+
+* We need a file format
+
+Any naive attempts?
+
+* We could just have a file just containing code!
+
+⚠️ issues with:
+- *sections*
+- *resources*
+- *metadata*
+- etc.
+
+* Let's welcome the ELF
+
+** col1
+   :PROPERTIES:
+   :BEAMER_col: 0.45
+   :BEAMER_opt: [t]
+   :END:
+
+ELF = Executable and Linkable Format
+
+The standard file format for executables on Linux systems
+
+** col2
+   :PROPERTIES:
+   :BEAMER_col: 0.45
+   :BEAMER_opt: [t]
+   :END:
+
+#+ATTR_LATEX: :width 0.9\linewidth
+[[file:images/elf-file-format-variant_318-45726-3098068533.jpg]]
+
+* ELF File Format Structure
+
+** col1
+   :PROPERTIES:
+   :BEAMER_col: 0.45
+   :BEAMER_opt: [t]
+   :END:
+
+The ELF format contains:
+- Header information
+- Program headers (segments)
+- Section headers
+- Code and data sections
+- Symbol tables
+- Relocation information
+
+** col2
+   :PROPERTIES:
+   :BEAMER_col: 0.45
+   :BEAMER_opt: [t]
+   :END:
+
+#+ATTR_LATEX: :width 0.9\linewidth
+[[file:images/ELF.png]]
+
+* How can we analyse such programs?
+
+* Disassemblers
+
+| Tool          | Free?     | Decompiler? | Notes                    |
+|---------------+-----------+-------------+--------------------------|
+| Ghidra        | Yes!      | Yes!        | NSA-developed, open source |
+| Binary Ninja  | Free-ish  | Kinda       | Commercial with free version |
+| IDA           | No/Yes    | Yes/No      | Industry standard         |
+
+*Note: Ghidra/IDA are both fine tools, NSA backdoor comment is just a joke.
+
+* Example: Hello World
+
+** C Source Code
+#+BEGIN_SRC c
+#include <stdio.h>
+
+int main(){
+    puts("Hello World!");
+    return 0;
+}
+#+END_SRC
+
+* Let's take a look at this compiled ELF
+
+** col1
+   :PROPERTIES:
+   :BEAMER_col: 0.45
+   :BEAMER_opt: [t]
+   :END:
+
+Open the compiled binary in Binary Ninja to explore:
+- Function list
+- Disassembly view
+- Control flow graphs
+- Cross-references
+
+** col2
+   :PROPERTIES:
+   :BEAMER_col: 0.45
+   :BEAMER_opt: [t]
+   :END:
+
+#+ATTR_LATEX: :width 0.9\linewidth
+[[file:images/binjy-waving-688738209.png]]
+
+* Deeper dive into functions
+
+* Functions heavily make use of the program stack
+
+The stack is a LIFO (Last In, First Out) data structure used for:
+- Function call management
+- Local variable storage
+- Return addresses
+- Saved register values
+
+* push
+
+** col1
+   :PROPERTIES:
+   :BEAMER_col: 0.45
+   :BEAMER_opt: [t]
+   :END:
+
+*** Syntax
+#+BEGIN_SRC asm
+push <op>
+#+END_SRC
+
+*** Functionality
+Pushes the QWORD in ~<op>~ onto the stack
+
+** col2
+   :PROPERTIES:
+   :BEAMER_col: 0.45
+   :BEAMER_opt: [t]
+   :END:
+
+*** Sample Code
+#+BEGIN_SRC asm
+mov     rax, 0x100
+mov     rbx, 0x200
+push    rax
+push    rbx
+#+END_SRC
+
+* pop
+
+** col1
+   :PROPERTIES:
+   :BEAMER_col: 0.45
+   :BEAMER_opt: [t]
+   :END:
+
+*** Syntax
+#+BEGIN_SRC asm
+pop <dst>
+#+END_SRC
+
+*** Functionality
+Pops the top QWORD from the stack into ~<dst>~
+
+** col2
+   :PROPERTIES:
+   :BEAMER_col: 0.45
+   :BEAMER_opt: [t]
+   :END:
+
+*** Sample Code
+#+BEGIN_SRC asm
+mov     rax, 0x100
+mov     rbx, 0x200
+push    rax
+push    rbx
+pop     rcx
+pop     rdx
+#+END_SRC
+
+* push/pop Demo
+
+#+BEGIN_SRC asm
+mov   rax, 0x100
+mov   rbx, 0x200
+push  rax
+push  rbx
+pop   rcx
+pop   rdx
+#+END_SRC
+
+After execution:
+- ~rcx~ will contain ~0x200~ (last pushed)
+- ~rdx~ will contain ~0x100~ (first pushed)
+
+* How does this enable functions?
+
+The stack enables functions by:
+1. Storing return addresses
+2. Preserving register values
+3. Allocating space for local variables
+4. Passing additional arguments
+
+* functions
+
+** Simple Function Calls
+#+BEGIN_SRC asm
+main:
+mov   rax, 1
+call  foo
+call  bar
+hlt
+
+foo:
+mov   rax, 2
+ret
+
+bar:
+mov   rax, 3
+ret
+#+END_SRC
+
+* nested functions
+
+** Nested Function Calls
+#+BEGIN_SRC asm
+main:
+mov   rax, 1
+call  foo
+hlt
+
+foo:
+mov   rax, 2
+call  bar
+ret
+
+bar:
+mov   rax, 3
+ret
+#+END_SRC
+
+The stack keeps track of multiple return addresses for nested calls
+
+* Deconstructing a function
+
+#+BEGIN_SRC c
+int foo(int a, int b){
+    puts("Inside function (foo)");
+    return a + b;
+}
+#+END_SRC
+
+This function demonstrates:
+- Parameter passing
+- Function prologue/epilogue
+- Return value handling
+
+* ABI
+
+ABI = Application Binary Interface
+
+Defines conventions for:
+- How parameters are passed to functions
+- Where return values are stored
+- Which registers are preserved across calls
+- Stack layout and alignment
+
+#+ATTR_LATEX: :width 0.5\linewidth
+[[file:images/ABI.png]]
+
+* Return value
+
+#+BEGIN_SRC c
+int foo(...){
+    ...
+    return a + b;
+}
+#+END_SRC
+
+* Return Value Convention
+
+#+BEGIN_QUOTE
+The return value is stored in the ~rax~ register, or if it is a 128-bit value, then the higher 64-bits go in ~rdx~.
+#+END_QUOTE
+
+* Return value Example
+
+** col1
+   :PROPERTIES:
+   :BEAMER_col: 0.45
+   :BEAMER_opt: [t]
+   :END:
+
+*** C source
+#+BEGIN_SRC c
+int foo(){
+    return 1000;
+}
+#+END_SRC
+
+** col2
+   :PROPERTIES:
+   :BEAMER_col: 0.45
+   :BEAMER_opt: [t]
+   :END:
+
+*** x86-64
+#+BEGIN_SRC asm
+foo:
+    push    rbp
+    mov     rbp, rsp
+    mov     eax, 1000
+    pop     rbp
+    ret
+#+END_SRC
+
+Note: The return value ~1000~ is placed in ~eax~ (lower 32 bits of ~rax~)
+
+* Parameters/Arguments
+
+#+BEGIN_SRC c
+int foo(int a, int b, ...){
+    ...
+}
+#+END_SRC
+
+* Parameter Passing Convention
+
+#+BEGIN_QUOTE
+Parameters to functions are passed in the registers ~rdi~, ~rsi~, ~rdx~, ~rcx~, ~r8~, ~r9~, and further values are passed on the stack in reverse order.
+#+END_QUOTE
+
+* Parameters/Arguments Example
+
+** col1
+   :PROPERTIES:
+   :BEAMER_col: 0.45
+   :BEAMER_opt: [t]
+   :END:
+
+*** C source
+#+BEGIN_SRC c
+int main() {
+    foo(1,2,3,4,5);
+}
+
+int foo(int a, int b, int c, int d, int e){
+    return 1;
+}
+#+END_SRC
+
+** col2
+   :PROPERTIES:
+   :BEAMER_col: 0.45
+   :BEAMER_opt: [t]
+   :END:
+
+*** x86-64
+#+BEGIN_SRC asm
+main:
+    push    rbp
+    mov     rbp, rsp
+    mov     r8d, 5
+    mov     ecx, 4
+    mov     edx, 3
+    mov     esi, 2
+    mov     edi, 1
+    mov     eax, 0
+    call    foo
+    mov     eax, 0
+    pop     rbp
+    ret
+
+foo:
+    push    rbp
+    mov     rbp, rsp
+    mov     DWORD PTR [rbp-4], edi
+    mov     DWORD PTR [rbp-8], esi
+    mov     DWORD PTR [rbp-12], edx
+    mov     DWORD PTR [rbp-16], ecx
+    mov     DWORD PTR [rbp-20], r8d
+    mov     eax, 1
+    pop     rbp
+    ret
+#+END_SRC
+
+Parameters are passed in order:
+1. First param (1) → ~edi~
+2. Second param (2) → ~esi~
+3. Third param (3) → ~edx~
+4. Fourth param (4) → ~ecx~
+5. Fifth param (5) → ~r8d~
+
+* Let's reverse some basic functions
+
+* Mini Challenge #1
+
+Practice identifying function parameters and return values
+
+* Mini Challenge #2
+
+Reverse engineer a more complex function
+
+* Mini Challenge #3
+
+Analyze nested function calls
+
+* Approaching real binaries!
+
+* How to find main()
+
+* Finding main() via __libc_start_main
+
+#+BEGIN_SRC c
+STATIC int LIBC_START_MAIN (int (*main) (int, char **, char **
+                                         MAIN_AUXVEC_DECL),
+                            int argc,
+                            char **argv,
+                            ...
+                            );
+#+END_SRC
+
+The first parameter to ~__libc_start_main~ is a pointer to the ~main()~ function
+
+Strategy:
+1. Find ~__libc_start_main~ in the binary
+2. Look at what's passed as the first argument
+3. That's your ~main()~ function!
+
+* Let's begin!
+
+Using Binary Ninja to analyze real binaries
+
+Key steps:
+1. Load the binary
+2. Find ~__libc_start_main~ or start symbol
+3. Identify ~main()~
+4. Analyze function parameters and return values
+5. Understand program flow
+6. Identify interesting functionality
