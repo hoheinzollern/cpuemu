@@ -921,53 +921,101 @@ fn window_title(_state: &State) -> String {
     String::from("Unicorn Engine GUI")
 }
 
+// Helper function to convert u8 to RegisterX86
+fn u8_to_register_x86(id: u8) -> RegisterX86 {
+    match id {
+        0x00 => RegisterX86::RAX,
+        0x01 => RegisterX86::RCX,
+        0x02 => RegisterX86::RDX,
+        0x03 => RegisterX86::RBX,
+        0x04 => RegisterX86::RSP,
+        0x05 => RegisterX86::RBP,
+        0x06 => RegisterX86::RSI,
+        0x07 => RegisterX86::RDI,
+        0x08 => RegisterX86::R8,
+        0x09 => RegisterX86::R9,
+        0x0a => RegisterX86::R10,
+        0x0b => RegisterX86::R11,
+        0x0c => RegisterX86::R12,
+        0x0d => RegisterX86::R13,
+        0x0e => RegisterX86::R14,
+        0x0f => RegisterX86::R15,
+        0x10 => RegisterX86::RIP,
+        _ => RegisterX86::RAX,
+    }
+}
+
+// Helper function to convert u8 to RegisterARM64
+fn u8_to_register_arm64(id: u8) -> RegisterARM64 {
+    match id {
+        0x00 => RegisterARM64::X0,
+        0x01 => RegisterARM64::X1,
+        0x02 => RegisterARM64::X2,
+        0x03 => RegisterARM64::X3,
+        0x04 => RegisterARM64::X4,
+        0x05 => RegisterARM64::X5,
+        0x06 => RegisterARM64::X6,
+        0x07 => RegisterARM64::X7,
+        0x08 => RegisterARM64::X8,
+        0x09 => RegisterARM64::X9,
+        0x0a => RegisterARM64::X10,
+        0x0b => RegisterARM64::X11,
+        0x0c => RegisterARM64::X12,
+        0x0d => RegisterARM64::X13,
+        0x0e => RegisterARM64::X14,
+        0x0f => RegisterARM64::X15,
+        0x20 => RegisterARM64::SP,
+        0x21 => RegisterARM64::PC,
+        _ => RegisterARM64::X0,
+    }
+}
+
 fn register_view<'a>(state: &'a State) -> Element<'a, Message> {
     match state.unicorn.get_arch() {
-        Arch::X86 => register_view_x86(&state.unicorn, &state.changed_registers, &state.register_inputs),
-        Arch::ARM64 => register_view_arm(&state.unicorn, &state.changed_registers, &state.register_inputs),
+        Arch::X86 => render_register_view_x86(&state.unicorn, &state.changed_registers, &state.register_inputs),
+        Arch::ARM64 => render_register_view_arm(&state.unicorn, &state.changed_registers, &state.register_inputs),
         _ => panic!("Unsupported architecture"),
     }
 }
 
-fn register_view_x86<'a>(
-    uc: &Unicorn<()>,
-    changed_registers: &[u8],
-    register_inputs: &HashMap<u8, String>,
+fn render_register_view_x86<'a>(
+    uc: &'a Unicorn<()>,
+    changed_registers: &'a [u8],
+    register_inputs: &'a HashMap<u8, String>,
 ) -> Element<'a, Message> {
     let registers = vec![
-        RegisterX86::RIP,
-        RegisterX86::RBP,
-        RegisterX86::RSP,
-        RegisterX86::RAX,
-        RegisterX86::RBX,
-        RegisterX86::RCX,
-        RegisterX86::RDX,
-        RegisterX86::RSI,
-        RegisterX86::RDI,
-        RegisterX86::R8,
-        RegisterX86::R9,
-        RegisterX86::R10,
-        RegisterX86::R11,
-        RegisterX86::R12,
-        RegisterX86::R13,
-        RegisterX86::R14,
-        RegisterX86::R15,
+        RegisterX86::RIP as u8,
+        RegisterX86::RBP as u8,
+        RegisterX86::RSP as u8,
+        RegisterX86::RAX as u8,
+        RegisterX86::RBX as u8,
+        RegisterX86::RCX as u8,
+        RegisterX86::RDX as u8,
+        RegisterX86::RSI as u8,
+        RegisterX86::RDI as u8,
+        RegisterX86::R8 as u8,
+        RegisterX86::R9 as u8,
+        RegisterX86::R10 as u8,
+        RegisterX86::R11 as u8,
+        RegisterX86::R12 as u8,
+        RegisterX86::R13 as u8,
+        RegisterX86::R14 as u8,
+        RegisterX86::R15 as u8,
     ];
 
     let mut col = Column::new().spacing(12);
     let mut pending: Option<Element<'_, Message>> = None;
     
-    for reg in registers.iter() {
-        let value = uc.reg_read(*reg).expect("Failed to read register");
-        let is_changed = changed_registers.contains(&(*reg as u8));
+    for reg_id in registers {
+        let value = uc.reg_read(reg_id).expect("Failed to read register");
+        let is_changed = changed_registers.contains(&reg_id);
 
         let normal_text_color = Color::from_rgb(0.78, 0.82, 0.88);
         let changed_text_color = Color::from_rgb(0.95, 0.84, 0.35);
         let text_color = if is_changed { changed_text_color } else { normal_text_color };
-        let _background_color = Color::from_rgb(0.13, 0.14, 0.2);
         
-        let reg_name = format!("{:?}", reg);
-        let reg_id = *reg as u8;
+        let reg_name = format!("{:?}", u8_to_register_x86(reg_id));
+        
         let input_value = register_inputs
             .get(&reg_id)
             .cloned()
@@ -997,10 +1045,10 @@ fn register_view_x86<'a>(
                     .width(Length::Fixed(50.0)),
                 input,
             ]
-            .spacing(6)
+            .spacing(6.0)
             .align_y(Alignment::Center)
         )
-        .padding(6)
+        .padding(6.0)
         .style(move |_theme: &Theme| {
             container::Style {
                 border: Border {
@@ -1020,27 +1068,29 @@ fn register_view_x86<'a>(
                 .into()
         };
         
-        // Add tooltip for 64-bit general purpose registers
-        let reg_element: Element<'_, Message> = match reg {
-            RegisterX86::RAX | RegisterX86::RBX | RegisterX86::RCX | RegisterX86::RDX |
-            RegisterX86::RSI | RegisterX86::RDI | RegisterX86::RBP | RegisterX86::RSP => {
-                let tooltip_content = format_x86_register_breakdown(*reg, value);
-                tooltip(base_element, text(tooltip_content).size(11), Position::Right)
-                    .style(|_theme: &Theme| {
-                        container::Style {
-                            background: Some(iced::Background::Color(Color::from_rgb(0.1, 0.1, 0.15))),
-                            border: Border {
-                                color: Color::from_rgb(0.4, 0.4, 0.5),
-                                width: 1.0,
-                                radius: 4.0.into(),
-                            },
-                            text_color: Some(Color::WHITE),
-                            ..Default::default()
-                        }
-                    })
-                    .into()
-            },
-            _ => base_element
+        let reg_element: Element<'_, Message> = {
+            let reg_x86 = u8_to_register_x86(reg_id);
+            match reg_x86 {
+                RegisterX86::RAX | RegisterX86::RBX | RegisterX86::RCX | RegisterX86::RDX |
+                RegisterX86::RSI | RegisterX86::RDI | RegisterX86::RBP | RegisterX86::RSP => {
+                    let tooltip_content = format_x86_register_breakdown(reg_x86, value);
+                    tooltip(base_element, text(tooltip_content).size(11), Position::Right)
+                        .style(|_theme: &Theme| {
+                            container::Style {
+                                background: Some(iced::Background::Color(Color::from_rgb(0.1, 0.1, 0.15))),
+                                border: Border {
+                                    color: Color::from_rgb(0.4, 0.4, 0.5),
+                                    width: 1.0,
+                                    radius: 4.0.into(),
+                                },
+                                text_color: Some(Color::WHITE),
+                                ..Default::default()
+                            }
+                        })
+                        .into()
+                },
+                _ => base_element
+            }
         };
         
         let reg_cell: Element<'_, Message> = container(reg_element)
@@ -1048,7 +1098,7 @@ fn register_view_x86<'a>(
             .into();
 
         if let Some(left) = pending.take() {
-            col = col.push(row![left, reg_cell].spacing(16));
+            col = col.push(row![left, reg_cell].spacing(16.0));
         } else {
             pending = Some(reg_cell);
         }
@@ -1058,50 +1108,49 @@ fn register_view_x86<'a>(
         let empty: Element<'_, Message> = container(text(""))
             .width(Length::FillPortion(1))
             .into();
-        col = col.push(row![left, empty].spacing(16));
+        col = col.push(row![left, empty].spacing(16.0));
     }
 
     col.into()
 }
 
-fn register_view_arm<'a>(
-    uc: &Unicorn<()>,
-    changed_registers: &[u8],
-    register_inputs: &HashMap<u8, String>,
+fn render_register_view_arm<'a>(
+    uc: &'a Unicorn<()>,
+    changed_registers: &'a [u8],
+    register_inputs: &'a HashMap<u8, String>,
 ) -> Element<'a, Message> {
     let registers = vec![
-        RegisterARM64::PC,
-        RegisterARM64::SP,
-        RegisterARM64::X0,
-        RegisterARM64::X1,
-        RegisterARM64::X2,
-        RegisterARM64::X3,
-        RegisterARM64::X4,
-        RegisterARM64::X5,
-        RegisterARM64::X6,
-        RegisterARM64::X7,
-        RegisterARM64::X8,
-        RegisterARM64::X9,
-        RegisterARM64::X10,
-        RegisterARM64::X11,
-        RegisterARM64::X12,
-        RegisterARM64::X13,
+        RegisterARM64::PC as u8,
+        RegisterARM64::SP as u8,
+        RegisterARM64::X0 as u8,
+        RegisterARM64::X1 as u8,
+        RegisterARM64::X2 as u8,
+        RegisterARM64::X3 as u8,
+        RegisterARM64::X4 as u8,
+        RegisterARM64::X5 as u8,
+        RegisterARM64::X6 as u8,
+        RegisterARM64::X7 as u8,
+        RegisterARM64::X8 as u8,
+        RegisterARM64::X9 as u8,
+        RegisterARM64::X10 as u8,
+        RegisterARM64::X11 as u8,
+        RegisterARM64::X12 as u8,
+        RegisterARM64::X13 as u8,
     ];
 
     let mut col = Column::new().spacing(12);
     let mut pending: Option<Element<'_, Message>> = None;
     
-    for reg in registers.iter() {
-        let value = uc.reg_read(*reg).expect("Failed to read register");
-        let is_changed = changed_registers.contains(&(*reg as u8));
+    for reg_id in registers {
+        let value = uc.reg_read(reg_id).expect("Failed to read register");
+        let is_changed = changed_registers.contains(&reg_id);
 
         let normal_text_color = Color::from_rgb(0.78, 0.82, 0.88);
         let changed_text_color = Color::from_rgb(0.95, 0.84, 0.35);
         let text_color = if is_changed { changed_text_color } else { normal_text_color };
-        let background_color = Color::from_rgb(0.13, 0.14, 0.2);
         
-        let reg_name = format!("{:?}", reg);
-        let reg_id = *reg as u8;
+        let reg_name = format!("{:?}", u8_to_register_arm64(reg_id));
+        
         let input_value = register_inputs
             .get(&reg_id)
             .cloned()
@@ -1128,16 +1177,15 @@ fn register_view_arm<'a>(
                 text(reg_name)
                     .size(12)
                     .color(text_color)
-                    .width(Length::Fixed(100.0)),
+                    .width(Length::Fixed(50.0)),
                 input,
             ]
-            .spacing(15)
+            .spacing(6.0)
             .align_y(Alignment::Center)
         )
-        .padding(12)
+        .padding(6.0)
         .style(move |_theme: &Theme| {
             container::Style {
-                background: Some(iced::Background::Color(background_color)),
                 border: Border {
                     color: border_color,
                     width: 1.0,
@@ -1155,29 +1203,31 @@ fn register_view_arm<'a>(
                 .into()
         };
         
-        // Add tooltip for X registers showing W variant
-        let reg_element: Element<'_, Message> = match reg {
-            RegisterARM64::X0 | RegisterARM64::X1 | RegisterARM64::X2 | RegisterARM64::X3 |
-            RegisterARM64::X4 | RegisterARM64::X5 | RegisterARM64::X6 | RegisterARM64::X7 |
-            RegisterARM64::X8 | RegisterARM64::X9 | RegisterARM64::X10 | RegisterARM64::X11 |
-            RegisterARM64::X12 | RegisterARM64::X13 => {
-                let tooltip_content = format_arm_register_breakdown(*reg, value);
-                tooltip(base_element, text(tooltip_content).size(11), Position::Right)
-                    .style(|_theme: &Theme| {
-                        container::Style {
-                            background: Some(iced::Background::Color(Color::from_rgb(0.1, 0.1, 0.15))),
-                            border: Border {
-                                color: Color::from_rgb(0.4, 0.4, 0.5),
-                                width: 1.0,
-                                radius: 4.0.into(),
-                            },
-                            text_color: Some(Color::WHITE),
-                            ..Default::default()
-                        }
-                    })
-                    .into()
-            },
-            _ => base_element
+        let reg_element: Element<'_, Message> = {
+            let reg_arm = u8_to_register_arm64(reg_id);
+            match reg_arm {
+                RegisterARM64::X0 | RegisterARM64::X1 | RegisterARM64::X2 | RegisterARM64::X3 |
+                RegisterARM64::X4 | RegisterARM64::X5 | RegisterARM64::X6 | RegisterARM64::X7 |
+                RegisterARM64::X8 | RegisterARM64::X9 | RegisterARM64::X10 | RegisterARM64::X11 |
+                RegisterARM64::X12 | RegisterARM64::X13 => {
+                    let tooltip_content = format_arm_register_breakdown(reg_arm, value);
+                    tooltip(base_element, text(tooltip_content).size(11), Position::Right)
+                        .style(|_theme: &Theme| {
+                            container::Style {
+                                background: Some(iced::Background::Color(Color::from_rgb(0.1, 0.1, 0.15))),
+                                border: Border {
+                                    color: Color::from_rgb(0.4, 0.4, 0.5),
+                                    width: 1.0,
+                                    radius: 4.0.into(),
+                                },
+                                text_color: Some(Color::WHITE),
+                                ..Default::default()
+                            }
+                        })
+                        .into()
+                },
+                _ => base_element
+            }
         };
         
         let reg_cell: Element<'_, Message> = container(reg_element)
@@ -1185,7 +1235,7 @@ fn register_view_arm<'a>(
             .into();
 
         if let Some(left) = pending.take() {
-            col = col.push(row![left, reg_cell].spacing(12));
+            col = col.push(row![left, reg_cell].spacing(16.0));
         } else {
             pending = Some(reg_cell);
         }
@@ -1195,7 +1245,7 @@ fn register_view_arm<'a>(
         let empty: Element<'_, Message> = container(text(""))
             .width(Length::FillPortion(1))
             .into();
-        col = col.push(row![left, empty].spacing(12));
+        col = col.push(row![left, empty].spacing(16.0));
     }
 
     col.into()
