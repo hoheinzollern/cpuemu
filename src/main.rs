@@ -21,9 +21,9 @@ fn cli() {
     let mut uc = Unicorn::new(Arch::X86, Mode::MODE_64).expect("Failed to initialize Unicorn engine");
 
     // Map memory
-    uc.mem_map(STACK_ADDRESS, STACK_SIZE, Permission::ALL).expect("Failed to map stack memory");
-    uc.mem_map(HEAP_ADDRESS, HEAP_SIZE, Permission::ALL).expect("Failed to map heap memory");
-    uc.mem_map(ADDRESS, binary_len, Permission::ALL).expect("Failed to map binary memory");
+    uc.mem_map(STACK_ADDRESS, STACK_SIZE as u64, Prot::ALL).expect("Failed to map stack memory");
+    uc.mem_map(HEAP_ADDRESS, HEAP_SIZE as u64, Prot::ALL).expect("Failed to map heap memory");
+    uc.mem_map(ADDRESS, binary_len as u64, Prot::ALL).expect("Failed to map binary memory");
     uc.mem_write(ADDRESS, &binary).expect("Failed to write binary to memory");
 
     // Set initial stack pointer

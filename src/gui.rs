@@ -42,9 +42,9 @@ impl Default for State {
 
         let mut uc = Unicorn::new(arch, mode).expect("Failed to initialize Unicorn engine");
 
-        uc.mem_map(0x2000, 0x1000, Permission::ALL).expect("Failed to map stack memory");
-        uc.mem_map(0x3000, 0x1000, Permission::ALL).expect("Failed to map heap memory");
-        uc.mem_map(0x1000, binary_len, Permission::ALL).expect("Failed to map binary memory");
+        uc.mem_map(0x2000, 0x1000, Prot::ALL).expect("Failed to map stack memory");
+        uc.mem_map(0x3000, 0x1000, Prot::ALL).expect("Failed to map heap memory");
+        uc.mem_map(0x1000, binary_len as u64, Prot::ALL).expect("Failed to map binary memory");
         uc.mem_write(0x1000, &binary).expect("Failed to write binary to memory");
 
         match arch {
@@ -115,9 +115,9 @@ fn reset_state(state: &mut State) {
     };
 
     state.unicorn = Unicorn::new(state.architecture, mode).expect("Failed to initialize Unicorn engine");
-    state.unicorn.mem_map(0x2000, 0x1000, Permission::ALL).expect("Failed to map stack memory");
-    state.unicorn.mem_map(0x3000, 0x1000, Permission::ALL).expect("Failed to map heap memory");
-    state.unicorn.mem_map(0x1000, binary_len, Permission::ALL).expect("Failed to map binary memory");
+    state.unicorn.mem_map(0x2000, 0x1000, Prot::ALL).expect("Failed to map stack memory");
+    state.unicorn.mem_map(0x3000, 0x1000, Prot::ALL).expect("Failed to map heap memory");
+    state.unicorn.mem_map(0x1000, binary_len as u64, Prot::ALL).expect("Failed to map binary memory");
     state.unicorn.mem_write(0x1000, &binary).expect("Failed to write binary to memory");
 
     match state.architecture {
@@ -454,9 +454,9 @@ fn update(state: &mut State, message: Message) {
 
             state.unicorn = Unicorn::new(state.architecture, mode).expect("Failed to initialize Unicorn engine");
 
-            state.unicorn.mem_map(0x2000, 0x1000, Permission::ALL).expect("Failed to map stack memory");
-            state.unicorn.mem_map(0x3000, 0x1000, Permission::ALL).expect("Failed to map heap memory");
-            state.unicorn.mem_map(0x1000, binary_len, Permission::ALL).expect("Failed to map binary memory");
+            state.unicorn.mem_map(0x2000, 0x1000, Prot::ALL).expect("Failed to map stack memory");
+            state.unicorn.mem_map(0x3000, 0x1000, Prot::ALL).expect("Failed to map heap memory");
+            state.unicorn.mem_map(0x1000, binary_len as u64, Prot::ALL).expect("Failed to map binary memory");
             state.unicorn.mem_write(0x1000, &binary).expect("Failed to write binary to memory");
 
             match state.architecture {
@@ -704,7 +704,7 @@ fn code_view<'a>(state: &'a State) -> Element<'a, Message> {
     .into()
 }
 
-fn view(state: &State) -> Element<Message> {
+fn view(state: &State) -> Element<'_, Message> {
     let can_save_registers = has_pending_register_edits(state);
     let can_save_code = state.code_is_valid && code_has_changes(&state.code, &state.code_original);
 
@@ -760,6 +760,10 @@ fn view(state: &State) -> Element<Message> {
 
 fn theme(_state: &State) -> Theme {
     Theme::TokyoNight
+}
+
+fn window_title(_state: &State) -> String {
+    String::from("Unicorn Engine GUI")
 }
 
 fn register_view<'a>(state: &'a State) -> Element<'a, Message> {
@@ -1116,7 +1120,8 @@ fn format_memory(uc: &Unicorn<()>, address: u64, size: usize) -> String {
 }
 
 pub fn gui() {
-    iced::application("Unicorn Engine GUI", update, view)
+    iced::application(State::default, update, view)
+        .title(window_title)
         .theme(theme)
         .default_font(Font::MONOSPACE)
         .window_size((800., 600.))
