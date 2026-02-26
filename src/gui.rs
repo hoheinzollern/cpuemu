@@ -26,6 +26,14 @@ struct State {
     code_is_valid: bool,
     heap: text_editor::Content,
     stack: text_editor::Content,
+    horizontal_split: f32,  // Ratio between left (code) and right (registers+heap+stack)
+    vertical_split: f32,    // Ratio between top (code+registers) and bottom (heap+stack) on right
+    dragging_horizontal: bool,
+    dragging_vertical: bool,
+    last_mouse_x: f32,
+    last_mouse_y: f32,
+    window_width: f32,
+    window_height: f32,
 }
 
 const HEXBIN_X86 : &str = "554889e5897dfc8b45fc0fafc05dc3";
@@ -77,6 +85,14 @@ impl Default for State {
             code_is_valid: true,
             heap: text_editor::Content::with_text(&heap),
             stack: text_editor::Content::with_text(&stack),
+            horizontal_split: 0.5,
+            vertical_split: 0.5,
+            dragging_horizontal: false,
+            dragging_vertical: false,
+            last_mouse_x: 0.0,
+            last_mouse_y: 0.0,
+            window_width: 1200.0,
+            window_height: 800.0,
         };
 
         sync_register_inputs(&mut state);
@@ -97,6 +113,10 @@ enum Message {
     SaveRegisters,
     SaveCode,
     SelectArchitecture(MyArch),
+    DragHorizontalStart,
+    DragVerticalStart,
+    DragMove { x: f32, y: f32 },
+    DragEnd,
 }
 
 fn reset_state(state: &mut State) {
@@ -488,6 +508,30 @@ fn update(state: &mut State, message: Message) {
             state.changed_registers.clear();
             sync_register_inputs(state);
         },
+        Message::DragHorizontalStart => {
+            state.dragging_horizontal = true;
+        },
+        Message::DragVerticalStart => {
+            state.dragging_vertical = true;
+        },
+        Message::DragMove { x, y } => {
+            if state.dragging_horizontal {
+                let delta = x - state.last_mouse_x;
+                let ratio_change = delta / state.window_width;
+                state.horizontal_split = (state.horizontal_split + ratio_change).clamp(0.2, 0.8);
+            }
+            if state.dragging_vertical {
+                let delta = y - state.last_mouse_y;
+                let ratio_change = delta / state.window_height;
+                state.vertical_split = (state.vertical_split + ratio_change).clamp(0.2, 0.8);
+            }
+            state.last_mouse_x = x;
+            state.last_mouse_y = y;
+        },
+        Message::DragEnd => {
+            state.dragging_horizontal = false;
+            state.dragging_vertical = false;
+        },
     }
 }
 
@@ -682,7 +726,6 @@ fn code_view<'a>(state: &'a State) -> Element<'a, Message> {
         .line_height(iced::widget::text::LineHeight::Absolute(iced::Pixels(20.0)));
     
     let editor_container = container(editor)
-        .padding(8)
         .style(move |_: &Theme| {
             container::Style {
                 background: Some(iced::Background::Color(Color::from_rgb(0.13, 0.14, 0.2))),
@@ -708,53 +751,165 @@ fn view(state: &State) -> Element<'_, Message> {
     let can_save_registers = has_pending_register_edits(state);
     let can_save_code = state.code_is_valid && code_has_changes(&state.code, &state.code_original);
 
+    // Toolbar
+    let toolbar = row![
+        text("Architecture:"),
+        pick_list(
+            vec![MyArch::X86, MyArch::ARM],
+            Some(arch_to_myarch(state.architecture)),
+            Message::SelectArchitecture,
+        ),
+        button(text("Execute")).on_press(Message::Execute),
+        button(text("Restart")).on_press(Message::Restart),
+        button(text("Step")).on_press(Message::Step),
+    ].padding(10).spacing(10).align_y(Alignment::Center);
+
+    // Top-left: Code section
+    let code_section = {
+        let code_label = row![
+            text("Disassembled Code:").width(Length::Fill), 
+            if can_save_code {
+                button(text("Save")).on_press(Message::SaveCode)
+            } else {
+                button(text("Save"))
+            },
+        ]
+        .spacing(10).align_y(Alignment::Center);
+        
+        column![
+            code_label,
+            code_view(state),
+        ].spacing(10).padding(10).height(Length::Fill)
+    };
+
+    // Top-right: Registers section
+    let registers_section = {
+        let reg_label = row![
+            text("Registers:").width(Length::Fill),
+            if can_save_registers {
+                button(text("Save")).on_press(Message::SaveRegisters)
+            } else {
+                button(text("Save"))
+            },
+        ]
+        .spacing(10).align_y(Alignment::Center);
+        
+        column![
+            reg_label,
+            register_view(state),
+        ].spacing(10).padding(10).height(Length::Fill)
+    };
+
+    // Bottom-left: Heap section
+    let heap_section = column![
+        row![text("Heap:").width(Length::Fill), button(text("Save"))].spacing(10).align_y(Alignment::Center),
+        text_editor::<_, Theme, _>(&state.heap).on_action(Message::EditHeap),
+    ].spacing(10).padding(10).height(Length::Fill);
+
+    // Bottom-right: Stack section
+    let stack_section = column![
+        row![text("Stack:").width(Length::Fill), button(text("Save"))].spacing(10).align_y(Alignment::Center),
+        text_editor::<_, Theme, _>(&state.stack).on_action(Message::EditStack),
+    ].spacing(10).padding(10).height(Length::Fill);
+
+    // Top row: Code | Registers (with draggable divider)
+    let top_row = row![
+        container(code_section)
+            .width(Length::FillPortion(1))
+            .height(Length::FillPortion(1)),
+        
+        // Vertical divider (draggable)
+        mouse_area(
+            container(text(""))
+                .width(Length::Fixed(8.0))
+                .height(Length::Fill)
+                .center_y(Length::Fill)
+                .style(|_theme: &Theme| {
+                    container::Style {
+                        background: Some(iced::Background::Color(Color::from_rgb(0.4, 0.4, 0.45))),
+                        ..Default::default()
+                    }
+                })
+        )
+        .on_press(Message::DragHorizontalStart)
+        .on_release(Message::DragEnd)
+        .on_move(|position| Message::DragMove { 
+            x: position.x, 
+            y: position.y 
+        }),
+
+        container(registers_section)
+            .width(Length::FillPortion(1))
+            .height(Length::FillPortion(1)),
+    ]
+    .spacing(0)
+    .height(Length::FillPortion(1));
+
+    // Bottom row: Heap | Stack (with draggable divider)
+    let bottom_row = row![
+        container(heap_section)
+            .width(Length::FillPortion(1))
+            .height(Length::FillPortion(1)),
+        
+        // Vertical divider (draggable)
+        mouse_area(
+            container(text(""))
+                .width(Length::Fixed(8.0))
+                .height(Length::Fill)
+                .center_y(Length::Fill)
+                .style(|_theme: &Theme| {
+                    container::Style {
+                        background: Some(iced::Background::Color(Color::from_rgb(0.4, 0.4, 0.45))),
+                        ..Default::default()
+                    }
+                })
+        )
+        .on_press(Message::DragHorizontalStart)
+        .on_release(Message::DragEnd)
+        .on_move(|position| Message::DragMove { 
+            x: position.x, 
+            y: position.y 
+        }),
+
+        container(stack_section)
+            .width(Length::FillPortion(1))
+            .height(Length::FillPortion(1)),
+    ]
+    .spacing(0)
+    .height(Length::FillPortion(1));
+
+    // Main grid with horizontal divider
+    let main_grid = column![
+        top_row,
+        
+        // Horizontal divider (draggable)
+        mouse_area(
+            container(text(""))
+                .width(Length::Fill)
+                .height(Length::Fixed(8.0))
+                .center_x(Length::Fill)
+                .style(|_theme: &Theme| {
+                    container::Style {
+                        background: Some(iced::Background::Color(Color::from_rgb(0.4, 0.4, 0.45))),
+                        ..Default::default()
+                    }
+                })
+        )
+        .on_press(Message::DragVerticalStart)
+        .on_release(Message::DragEnd)
+        .on_move(|position| Message::DragMove { 
+            x: position.x, 
+            y: position.y 
+        }),
+
+        bottom_row,
+    ]
+    .spacing(0)
+    .height(Length::Fill);
+
     column![
-        row![
-            text("Architecture:"),
-            pick_list(
-                vec![MyArch::X86, MyArch::ARM],
-                Some(arch_to_myarch(state.architecture)),
-                Message::SelectArchitecture,
-            ),
-            button(text("Execute")).on_press(Message::Execute),
-            button(text("Restart")).on_press(Message::Restart),
-            button(text("Step")).on_press(Message::Step),
-        ].padding(10).spacing(10).align_y(Alignment::Center),
-        row![
-            column![
-                row![text("Disassembled Code:").width(Length::Fill), 
-                    if can_save_code {
-                        button(text("Save")).on_press(Message::SaveCode)
-                    } else {
-                        button(text("Save"))
-                    },
-                ]
-                .spacing(10).align_y(Alignment::Center),
-                code_view(state),
-            ].width(Length::Fill).spacing(10),
-            column![
-                row![
-                    text("Registers:").width(Length::Fill),
-                    if can_save_registers {
-                        button(text("Save")).on_press(Message::SaveRegisters)
-                    } else {
-                        button(text("Save"))
-                    },
-                ]
-                .spacing(10).align_y(Alignment::Center),
-                register_view(state),
-            ].width(Length::Fixed(650.)).spacing(10),
-        ].padding(10).spacing(10),
-        row![
-            column![
-                row![text("Heap:").width(Length::Fill), button(text("Save"))].spacing(10).align_y(Alignment::Center),
-                text_editor::<_, Theme, _>(&state.heap).on_action(Message::EditHeap),
-            ].width(iced::Length::FillPortion(1)).spacing(10),
-            column![
-                row![text("Stack:").width(Length::Fill), button(text("Save"))].spacing(10).align_y(Alignment::Center),
-                text_editor::<_, Theme, _>(&state.stack).on_action(Message::EditStack),
-            ].width(iced::Length::FillPortion(1)).spacing(10),
-        ].padding(10).spacing(10)
+        toolbar,
+        main_grid,
     ].into()
 }
 
@@ -809,7 +964,7 @@ fn register_view_x86<'a>(
         let normal_text_color = Color::from_rgb(0.78, 0.82, 0.88);
         let changed_text_color = Color::from_rgb(0.95, 0.84, 0.35);
         let text_color = if is_changed { changed_text_color } else { normal_text_color };
-        let background_color = Color::from_rgb(0.13, 0.14, 0.2);
+        let _background_color = Color::from_rgb(0.13, 0.14, 0.2);
         
         let reg_name = format!("{:?}", reg);
         let reg_id = *reg as u8;
@@ -839,16 +994,15 @@ fn register_view_x86<'a>(
                 text(reg_name)
                     .size(12)
                     .color(text_color)
-                    .width(Length::Fixed(100.0)),
+                    .width(Length::Fixed(50.0)),
                 input,
             ]
-            .spacing(15)
+            .spacing(6)
             .align_y(Alignment::Center)
         )
-        .padding(12)
+        .padding(6)
         .style(move |_theme: &Theme| {
             container::Style {
-                background: Some(iced::Background::Color(background_color)),
                 border: Border {
                     color: border_color,
                     width: 1.0,
