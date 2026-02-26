@@ -26,14 +26,6 @@ struct State {
     code_is_valid: bool,
     heap: text_editor::Content,
     stack: text_editor::Content,
-    horizontal_split: f32,  // Ratio between left (code) and right (registers+heap+stack)
-    vertical_split: f32,    // Ratio between top (code+registers) and bottom (heap+stack) on right
-    dragging_horizontal: bool,
-    dragging_vertical: bool,
-    last_mouse_x: f32,
-    last_mouse_y: f32,
-    window_width: f32,
-    window_height: f32,
 }
 
 const HEXBIN_X86 : &str = "554889e5897dfc8b45fc0fafc05dc3";
@@ -85,14 +77,6 @@ impl Default for State {
             code_is_valid: true,
             heap: text_editor::Content::with_text(&heap),
             stack: text_editor::Content::with_text(&stack),
-            horizontal_split: 0.5,
-            vertical_split: 0.5,
-            dragging_horizontal: false,
-            dragging_vertical: false,
-            last_mouse_x: 0.0,
-            last_mouse_y: 0.0,
-            window_width: 1200.0,
-            window_height: 800.0,
         };
 
         sync_register_inputs(&mut state);
@@ -113,10 +97,6 @@ enum Message {
     SaveRegisters,
     SaveCode,
     SelectArchitecture(MyArch),
-    DragHorizontalStart,
-    DragVerticalStart,
-    DragMove { x: f32, y: f32 },
-    DragEnd,
 }
 
 fn reset_state(state: &mut State) {
@@ -508,30 +488,6 @@ fn update(state: &mut State, message: Message) {
             state.changed_registers.clear();
             sync_register_inputs(state);
         },
-        Message::DragHorizontalStart => {
-            state.dragging_horizontal = true;
-        },
-        Message::DragVerticalStart => {
-            state.dragging_vertical = true;
-        },
-        Message::DragMove { x, y } => {
-            if state.dragging_horizontal {
-                let delta = x - state.last_mouse_x;
-                let ratio_change = delta / state.window_width;
-                state.horizontal_split = (state.horizontal_split + ratio_change).clamp(0.2, 0.8);
-            }
-            if state.dragging_vertical {
-                let delta = y - state.last_mouse_y;
-                let ratio_change = delta / state.window_height;
-                state.vertical_split = (state.vertical_split + ratio_change).clamp(0.2, 0.8);
-            }
-            state.last_mouse_x = x;
-            state.last_mouse_y = y;
-        },
-        Message::DragEnd => {
-            state.dragging_horizontal = false;
-            state.dragging_vertical = false;
-        },
     }
 }
 
@@ -812,32 +768,12 @@ fn view(state: &State) -> Element<'_, Message> {
         text_editor::<_, Theme, _>(&state.stack).on_action(Message::EditStack),
     ].spacing(10).padding(10).height(Length::Fill);
 
-    // Top row: Code | Registers (with draggable divider)
+    // Top row: Code | Registers
     let top_row = row![
         container(code_section)
             .width(Length::FillPortion(1))
             .height(Length::FillPortion(1)),
         
-        // Vertical divider (draggable)
-        mouse_area(
-            container(text(""))
-                .width(Length::Fixed(8.0))
-                .height(Length::Fill)
-                .center_y(Length::Fill)
-                .style(|_theme: &Theme| {
-                    container::Style {
-                        background: Some(iced::Background::Color(Color::from_rgb(0.4, 0.4, 0.45))),
-                        ..Default::default()
-                    }
-                })
-        )
-        .on_press(Message::DragHorizontalStart)
-        .on_release(Message::DragEnd)
-        .on_move(|position| Message::DragMove { 
-            x: position.x, 
-            y: position.y 
-        }),
-
         container(registers_section)
             .width(Length::FillPortion(1))
             .height(Length::FillPortion(1)),
@@ -845,32 +781,12 @@ fn view(state: &State) -> Element<'_, Message> {
     .spacing(0)
     .height(Length::FillPortion(1));
 
-    // Bottom row: Heap | Stack (with draggable divider)
+    // Bottom row: Heap | Stack
     let bottom_row = row![
         container(heap_section)
             .width(Length::FillPortion(1))
             .height(Length::FillPortion(1)),
         
-        // Vertical divider (draggable)
-        mouse_area(
-            container(text(""))
-                .width(Length::Fixed(8.0))
-                .height(Length::Fill)
-                .center_y(Length::Fill)
-                .style(|_theme: &Theme| {
-                    container::Style {
-                        background: Some(iced::Background::Color(Color::from_rgb(0.4, 0.4, 0.45))),
-                        ..Default::default()
-                    }
-                })
-        )
-        .on_press(Message::DragHorizontalStart)
-        .on_release(Message::DragEnd)
-        .on_move(|position| Message::DragMove { 
-            x: position.x, 
-            y: position.y 
-        }),
-
         container(stack_section)
             .width(Length::FillPortion(1))
             .height(Length::FillPortion(1)),
@@ -878,30 +794,9 @@ fn view(state: &State) -> Element<'_, Message> {
     .spacing(0)
     .height(Length::FillPortion(1));
 
-    // Main grid with horizontal divider
+    // Main grid
     let main_grid = column![
         top_row,
-        
-        // Horizontal divider (draggable)
-        mouse_area(
-            container(text(""))
-                .width(Length::Fill)
-                .height(Length::Fixed(8.0))
-                .center_x(Length::Fill)
-                .style(|_theme: &Theme| {
-                    container::Style {
-                        background: Some(iced::Background::Color(Color::from_rgb(0.4, 0.4, 0.45))),
-                        ..Default::default()
-                    }
-                })
-        )
-        .on_press(Message::DragVerticalStart)
-        .on_release(Message::DragEnd)
-        .on_move(|position| Message::DragMove { 
-            x: position.x, 
-            y: position.y 
-        }),
-
         bottom_row,
     ]
     .spacing(0)
@@ -984,29 +879,30 @@ fn render_register_view_x86<'a>(
     register_inputs: &'a HashMap<u8, String>,
 ) -> Element<'a, Message> {
     let registers = vec![
-        RegisterX86::RIP as u8,
-        RegisterX86::RBP as u8,
-        RegisterX86::RSP as u8,
-        RegisterX86::RAX as u8,
-        RegisterX86::RBX as u8,
-        RegisterX86::RCX as u8,
-        RegisterX86::RDX as u8,
-        RegisterX86::RSI as u8,
-        RegisterX86::RDI as u8,
-        RegisterX86::R8 as u8,
-        RegisterX86::R9 as u8,
-        RegisterX86::R10 as u8,
-        RegisterX86::R11 as u8,
-        RegisterX86::R12 as u8,
-        RegisterX86::R13 as u8,
-        RegisterX86::R14 as u8,
-        RegisterX86::R15 as u8,
+        RegisterX86::RIP,
+        RegisterX86::RBP,
+        RegisterX86::RSP,
+        RegisterX86::RAX,
+        RegisterX86::RBX,
+        RegisterX86::RCX,
+        RegisterX86::RDX,
+        RegisterX86::RSI,
+        RegisterX86::RDI,
+        RegisterX86::R8,
+        RegisterX86::R9,
+        RegisterX86::R10,
+        RegisterX86::R11,
+        RegisterX86::R12,
+        RegisterX86::R13,
+        RegisterX86::R14,
+        RegisterX86::R15,
     ];
 
-    let mut col = Column::new().spacing(12);
-    let mut pending: Option<Element<'_, Message>> = None;
+    let mut col = Column::new().spacing(8).width(Length::Fill);
+    let mut pending: Vec<Element<'_, Message>> = Vec::new();
     
-    for reg_id in registers {
+    for reg in registers {
+        let reg_id = reg as u8;
         let value = uc.reg_read(reg_id).expect("Failed to read register");
         let is_changed = changed_registers.contains(&reg_id);
 
@@ -1014,7 +910,26 @@ fn render_register_view_x86<'a>(
         let changed_text_color = Color::from_rgb(0.95, 0.84, 0.35);
         let text_color = if is_changed { changed_text_color } else { normal_text_color };
         
-        let reg_name = format!("{:?}", u8_to_register_x86(reg_id));
+        let reg_name = match reg {
+            RegisterX86::RAX => "RAX".to_string(),
+            RegisterX86::RBX => "RBX".to_string(),
+            RegisterX86::RCX => "RCX".to_string(),
+            RegisterX86::RDX => "RDX".to_string(),
+            RegisterX86::RSI => "RSI".to_string(),
+            RegisterX86::RDI => "RDI".to_string(),
+            RegisterX86::RBP => "RBP".to_string(),
+            RegisterX86::RSP => "RSP".to_string(),
+            RegisterX86::R8 => "R8".to_string(),
+            RegisterX86::R9 => "R9".to_string(),
+            RegisterX86::R10 => "R10".to_string(),
+            RegisterX86::R11 => "R11".to_string(),
+            RegisterX86::R12 => "R12".to_string(),
+            RegisterX86::R13 => "R13".to_string(),
+            RegisterX86::R14 => "R14".to_string(),
+            RegisterX86::R15 => "R15".to_string(),
+            RegisterX86::RIP => "RIP".to_string(),
+            _ => "???".to_string(),
+        };
         
         let input_value = register_inputs
             .get(&reg_id)
@@ -1023,7 +938,7 @@ fn render_register_view_x86<'a>(
         let is_valid = is_register_input_valid(&input_value);
         let input = text_input("", &input_value)
             .size(12)
-            .width(Length::Fixed(180.0))
+            .width(Length::Fill)
             .on_input(move |text| Message::EditRegister { reg: reg_id, value: text })
             .style(move |theme: &Theme, status| {
                 let mut style = text_input::default(theme, status);
@@ -1042,13 +957,15 @@ fn render_register_view_x86<'a>(
                 text(reg_name)
                     .size(12)
                     .color(text_color)
-                    .width(Length::Fixed(50.0)),
+                    .width(Length::Shrink),
                 input,
             ]
             .spacing(6.0)
             .align_y(Alignment::Center)
+            .width(Length::Fill)
         )
         .padding(6.0)
+        .width(Length::Fill)
         .style(move |_theme: &Theme| {
             container::Style {
                 border: Border {
@@ -1069,11 +986,10 @@ fn render_register_view_x86<'a>(
         };
         
         let reg_element: Element<'_, Message> = {
-            let reg_x86 = u8_to_register_x86(reg_id);
-            match reg_x86 {
+            match reg {
                 RegisterX86::RAX | RegisterX86::RBX | RegisterX86::RCX | RegisterX86::RDX |
                 RegisterX86::RSI | RegisterX86::RDI | RegisterX86::RBP | RegisterX86::RSP => {
-                    let tooltip_content = format_x86_register_breakdown(reg_x86, value);
+                    let tooltip_content = format_x86_register_breakdown(reg, value);
                     tooltip(base_element, text(tooltip_content).size(11), Position::Right)
                         .style(|_theme: &Theme| {
                             container::Style {
@@ -1097,18 +1013,23 @@ fn render_register_view_x86<'a>(
             .width(Length::FillPortion(1))
             .into();
 
-        if let Some(left) = pending.take() {
-            col = col.push(row![left, reg_cell].spacing(16.0));
-        } else {
-            pending = Some(reg_cell);
-        }
+        pending.push(reg_cell);
     }
 
-    if let Some(left) = pending.take() {
-        let empty: Element<'_, Message> = container(text(""))
-            .width(Length::FillPortion(1))
-            .into();
-        col = col.push(row![left, empty].spacing(16.0));
+    // Create rows of 3 registers each
+    while !pending.is_empty() {
+        let item0 = pending.remove(0);
+        let item1 = if !pending.is_empty() { 
+            pending.remove(0) 
+        } else { 
+            container(text("")).width(Length::FillPortion(1)).into() 
+        };
+        let item2 = if !pending.is_empty() { 
+            pending.remove(0) 
+        } else { 
+            container(text("")).width(Length::FillPortion(1)).into() 
+        };
+        col = col.push(row![item0, item1, item2].spacing(8.0).width(Length::Fill));
     }
 
     col.into()
@@ -1120,28 +1041,29 @@ fn render_register_view_arm<'a>(
     register_inputs: &'a HashMap<u8, String>,
 ) -> Element<'a, Message> {
     let registers = vec![
-        RegisterARM64::PC as u8,
-        RegisterARM64::SP as u8,
-        RegisterARM64::X0 as u8,
-        RegisterARM64::X1 as u8,
-        RegisterARM64::X2 as u8,
-        RegisterARM64::X3 as u8,
-        RegisterARM64::X4 as u8,
-        RegisterARM64::X5 as u8,
-        RegisterARM64::X6 as u8,
-        RegisterARM64::X7 as u8,
-        RegisterARM64::X8 as u8,
-        RegisterARM64::X9 as u8,
-        RegisterARM64::X10 as u8,
-        RegisterARM64::X11 as u8,
-        RegisterARM64::X12 as u8,
-        RegisterARM64::X13 as u8,
+        RegisterARM64::PC,
+        RegisterARM64::SP,
+        RegisterARM64::X0,
+        RegisterARM64::X1,
+        RegisterARM64::X2,
+        RegisterARM64::X3,
+        RegisterARM64::X4,
+        RegisterARM64::X5,
+        RegisterARM64::X6,
+        RegisterARM64::X7,
+        RegisterARM64::X8,
+        RegisterARM64::X9,
+        RegisterARM64::X10,
+        RegisterARM64::X11,
+        RegisterARM64::X12,
+        RegisterARM64::X13,
     ];
 
-    let mut col = Column::new().spacing(12);
-    let mut pending: Option<Element<'_, Message>> = None;
+    let mut col = Column::new().spacing(8).width(Length::Fill);
+    let mut pending: Vec<Element<'_, Message>> = Vec::new();
     
-    for reg_id in registers {
+    for reg in registers {
+        let reg_id = reg as u8;
         let value = uc.reg_read(reg_id).expect("Failed to read register");
         let is_changed = changed_registers.contains(&reg_id);
 
@@ -1149,7 +1071,27 @@ fn render_register_view_arm<'a>(
         let changed_text_color = Color::from_rgb(0.95, 0.84, 0.35);
         let text_color = if is_changed { changed_text_color } else { normal_text_color };
         
-        let reg_name = format!("{:?}", u8_to_register_arm64(reg_id));
+        let reg_name = match reg {
+            RegisterARM64::X0 => "X0".to_string(),
+            RegisterARM64::X1 => "X1".to_string(),
+            RegisterARM64::X2 => "X2".to_string(),
+            RegisterARM64::X3 => "X3".to_string(),
+            RegisterARM64::X4 => "X4".to_string(),
+            RegisterARM64::X5 => "X5".to_string(),
+            RegisterARM64::X6 => "X6".to_string(),
+            RegisterARM64::X7 => "X7".to_string(),
+            RegisterARM64::X8 => "X8".to_string(),
+            RegisterARM64::X9 => "X9".to_string(),
+            RegisterARM64::X10 => "X10".to_string(),
+            RegisterARM64::X11 => "X11".to_string(),
+            RegisterARM64::X12 => "X12".to_string(),
+            RegisterARM64::X13 => "X13".to_string(),
+            RegisterARM64::X14 => "X14".to_string(),
+            RegisterARM64::X15 => "X15".to_string(),
+            RegisterARM64::SP => "SP".to_string(),
+            RegisterARM64::PC => "PC".to_string(),
+            _ => "???".to_string(),
+        };
         
         let input_value = register_inputs
             .get(&reg_id)
@@ -1158,7 +1100,7 @@ fn render_register_view_arm<'a>(
         let is_valid = is_register_input_valid(&input_value);
         let input = text_input("", &input_value)
             .size(12)
-            .width(Length::Fixed(180.0))
+            .width(Length::Fill)
             .on_input(move |text| Message::EditRegister { reg: reg_id, value: text })
             .style(move |theme: &Theme, status| {
                 let mut style = text_input::default(theme, status);
@@ -1177,13 +1119,15 @@ fn render_register_view_arm<'a>(
                 text(reg_name)
                     .size(12)
                     .color(text_color)
-                    .width(Length::Fixed(50.0)),
+                    .width(Length::Shrink),
                 input,
             ]
             .spacing(6.0)
             .align_y(Alignment::Center)
+            .width(Length::Fill)
         )
         .padding(6.0)
+        .width(Length::Fill)
         .style(move |_theme: &Theme| {
             container::Style {
                 border: Border {
@@ -1204,13 +1148,12 @@ fn render_register_view_arm<'a>(
         };
         
         let reg_element: Element<'_, Message> = {
-            let reg_arm = u8_to_register_arm64(reg_id);
-            match reg_arm {
+            match reg {
                 RegisterARM64::X0 | RegisterARM64::X1 | RegisterARM64::X2 | RegisterARM64::X3 |
                 RegisterARM64::X4 | RegisterARM64::X5 | RegisterARM64::X6 | RegisterARM64::X7 |
                 RegisterARM64::X8 | RegisterARM64::X9 | RegisterARM64::X10 | RegisterARM64::X11 |
                 RegisterARM64::X12 | RegisterARM64::X13 => {
-                    let tooltip_content = format_arm_register_breakdown(reg_arm, value);
+                    let tooltip_content = format_arm_register_breakdown(reg, value);
                     tooltip(base_element, text(tooltip_content).size(11), Position::Right)
                         .style(|_theme: &Theme| {
                             container::Style {
@@ -1234,18 +1177,23 @@ fn render_register_view_arm<'a>(
             .width(Length::FillPortion(1))
             .into();
 
-        if let Some(left) = pending.take() {
-            col = col.push(row![left, reg_cell].spacing(16.0));
-        } else {
-            pending = Some(reg_cell);
-        }
+        pending.push(reg_cell);
     }
 
-    if let Some(left) = pending.take() {
-        let empty: Element<'_, Message> = container(text(""))
-            .width(Length::FillPortion(1))
-            .into();
-        col = col.push(row![left, empty].spacing(16.0));
+    // Create rows of 3 registers each
+    while !pending.is_empty() {
+        let item0 = pending.remove(0);
+        let item1 = if !pending.is_empty() { 
+            pending.remove(0) 
+        } else { 
+            container(text("")).width(Length::FillPortion(1)).into() 
+        };
+        let item2 = if !pending.is_empty() { 
+            pending.remove(0) 
+        } else { 
+            container(text("")).width(Length::FillPortion(1)).into() 
+        };
+        col = col.push(row![item0, item1, item2].spacing(8.0).width(Length::Fill));
     }
 
     col.into()
