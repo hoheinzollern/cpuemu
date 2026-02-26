@@ -82,6 +82,54 @@ enum Message {
     SelectArchitecture(MyArch),
 }
 
+fn reset_state(state: &mut State) {
+    let bin = match state.architecture {
+        Arch::X86 => HEXBIN_X86,
+        Arch::ARM64 => HEXBIN_ARM,
+        _ => panic!("Unsupported architecture"),
+    };
+    let binary = hex::decode(bin)
+        .expect("Failed to decode hex string");
+    let binary_len = ((binary.len() + 0xFFF) / 0x1000) * 0x1000;
+    let mode = match state.architecture {
+        Arch::X86 => Mode::MODE_64,
+        Arch::ARM64 => Mode::ARM,
+        _ => panic!("Unsupported architecture"),
+    };
+
+    state.unicorn = Unicorn::new(state.architecture, mode).expect("Failed to initialize Unicorn engine");
+    state.unicorn.mem_map(0x2000, 0x1000, Permission::ALL).expect("Failed to map stack memory");
+    state.unicorn.mem_map(0x3000, 0x1000, Permission::ALL).expect("Failed to map heap memory");
+    state.unicorn.mem_map(0x1000, binary_len, Permission::ALL).expect("Failed to map binary memory");
+    state.unicorn.mem_write(0x1000, &binary).expect("Failed to write binary to memory");
+
+    match state.architecture {
+        Arch::X86 => {
+            state.unicorn.reg_write(RegisterX86::RSP, 0x2000 + 0x1000).expect("Failed to set stack pointer");
+            state.unicorn.reg_write(RegisterX86::RBP, 0x2000 + 0x1000).expect("Failed to set base pointer");
+            state.unicorn.reg_write(RegisterX86::RIP, 0x1000).expect("Failed to set instruction pointer");
+            state.unicorn.reg_write(RegisterX86::RDI, 10).unwrap();
+        },
+        Arch::ARM64 => {
+            state.unicorn.reg_write(RegisterARM64::SP, 0x2000 + 0x1000).expect("Failed to set stack pointer");
+            state.unicorn.reg_write(RegisterARM64::PC, 0x1000).expect("Failed to set instruction pointer");
+            state.unicorn.reg_write(RegisterARM64::X0, 10).unwrap();
+        },
+        _ => panic!("Unsupported architecture"),
+    }
+
+    let code = disassemble(&state.unicorn);
+    state.code = text_editor::Content::with_text(&code);
+
+    let heap = heap(&state.unicorn);
+    state.heap = text_editor::Content::with_text(&heap);
+
+    let stack = stack(&state.unicorn);
+    state.stack = text_editor::Content::with_text(&stack);
+
+    state.changed_registers.clear();
+}
+
 fn update(state: &mut State, message: Message) {
     match message {
         Message::Execute => {
@@ -92,7 +140,10 @@ fn update(state: &mut State, message: Message) {
             };
 
             let addr = state.unicorn.reg_read(pc).expect("Failed to read RIP");
-            state.unicorn.emu_start(addr, 0x1000 + 0x2D, 0, 1).unwrap();
+            if state.unicorn.emu_start(addr, 0x1000 + 0x2D, 0, 1).is_err() {
+                reset_state(state);
+                return;
+            }
 
             let code = disassemble(&state.unicorn);
             state.code = text_editor::Content::with_text(&code);
@@ -104,43 +155,7 @@ fn update(state: &mut State, message: Message) {
             state.stack = text_editor::Content::with_text(&stack);
         },
         Message::Restart => {
-            let bin = match state.architecture {
-                Arch::X86 => HEXBIN_X86,
-                Arch::ARM64 => HEXBIN_ARM,
-                _ => panic!("Unsupported architecture"),
-            };
-            let binary = hex::decode(bin)
-                .expect("Failed to decode hex string");
-            let binary_len = ((binary.len() + 0xFFF) / 0x1000) * 0x1000;
-
-            state.unicorn.mem_map(0x2000, 0x1000, Permission::ALL).expect("Failed to map stack memory");
-            state.unicorn.mem_map(0x3000, 0x1000, Permission::ALL).expect("Failed to map heap memory");
-            state.unicorn.mem_map(0x1000, binary_len, Permission::ALL).expect("Failed to map binary memory");
-            state.unicorn.mem_write(0x1000, &binary).expect("Failed to write binary to memory");
-
-            match state.architecture {
-                Arch::X86 => {
-                    state.unicorn.reg_write(RegisterX86::RSP, 0x2000 + 0x1000).expect("Failed to set stack pointer");
-                    state.unicorn.reg_write(RegisterX86::RBP, 0x2000 + 0x1000).expect("Failed to set base pointer");
-                    state.unicorn.reg_write(RegisterX86::RIP, 0x1000).expect("Failed to set instruction pointer");
-                    state.unicorn.reg_write(RegisterX86::RDI, 10).unwrap();
-                },
-                Arch::ARM64 => {
-                    state.unicorn.reg_write(RegisterARM64::SP, 0x2000 + 0x1000).expect("Failed to set stack pointer");
-                    state.unicorn.reg_write(RegisterARM64::PC, 0x1000).expect("Failed to set instruction pointer");
-                    state.unicorn.reg_write(RegisterARM64::X0, 10).unwrap();
-                },
-                _ => panic!("Unsupported architecture"),
-            }
-
-            let code = disassemble(&state.unicorn);
-            state.code = text_editor::Content::with_text(&code);
-
-            let heap = heap(&state.unicorn);
-            state.heap = text_editor::Content::with_text(&heap);
-
-            let stack = stack(&state.unicorn);
-            state.stack = text_editor::Content::with_text(&stack);
+            reset_state(state);
         },
         Message::Step => {
             let registers: Vec<u8> = match state.architecture {
@@ -200,7 +215,10 @@ fn update(state: &mut State, message: Message) {
                 _ => panic!("Unsupported architecture"),
             };
             let addr = state.unicorn.reg_read(pc).expect("Failed to read PC");
-            state.unicorn.emu_start(addr, 0x1000 + 0x2D, 0, 1).unwrap();
+            if state.unicorn.emu_start(addr, 0x1000 + 0x2D, 0, 1).is_err() {
+                reset_state(state);
+                return;
+            }
 
             for &reg in &registers {
                 let value = state.unicorn.reg_read(reg).expect("Failed to read register");
