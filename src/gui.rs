@@ -49,9 +49,9 @@ impl Default for State {
                 uc.reg_write(RegisterX86::RDI, 10).unwrap();
             },
             Arch::ARM64 => {
-                uc.reg_write(RegisterARM::SP, 0x2000 + 0x1000).expect("Failed to set stack pointer");
-                uc.reg_write(RegisterARM::PC, 0x1000).expect("Failed to set instruction pointer");
-                uc.reg_write(RegisterARM::R0, 10).unwrap();
+                uc.reg_write(RegisterARM64::SP, 0x2000 + 0x1000).expect("Failed to set stack pointer");
+                uc.reg_write(RegisterARM64::PC, 0x1000).expect("Failed to set instruction pointer");
+                uc.reg_write(RegisterARM64::X0, 10).unwrap();
             },
             _ => panic!("Unsupported architecture"),
         }
@@ -128,7 +128,7 @@ fn update(state: &mut State, message: Message) {
                 Arch::ARM64 => {
                     state.unicorn.reg_write(RegisterARM64::SP, 0x2000 + 0x1000).expect("Failed to set stack pointer");
                     state.unicorn.reg_write(RegisterARM64::PC, 0x1000).expect("Failed to set instruction pointer");
-                    state.unicorn.reg_write(RegisterARM64::B0, 10).unwrap();
+                    state.unicorn.reg_write(RegisterARM64::X0, 10).unwrap();
                 },
                 _ => panic!("Unsupported architecture"),
             }
@@ -166,23 +166,23 @@ fn update(state: &mut State, message: Message) {
                 Arch::ARM64 => vec![
                     RegisterARM64::PC as u8,
                     RegisterARM64::SP as u8,
-                    RegisterARM64::B0 as u8,
-                    RegisterARM64::B1 as u8,
-                    RegisterARM64::B2 as u8,
-                    RegisterARM64::B3 as u8,
-                    RegisterARM64::B4 as u8,
-                    RegisterARM64::B5 as u8,
-                    RegisterARM64::B6 as u8,
-                    RegisterARM64::B7 as u8,
-                    RegisterARM64::B8 as u8,
-                    RegisterARM64::B9 as u8,
-                    RegisterARM64::B10 as u8,
-                    RegisterARM64::B11 as u8,
-                    RegisterARM64::B12 as u8,
-                    RegisterARM64::B13 as u8,
-                    RegisterARM64::B14 as u8,
-                    RegisterARM64::B15 as u8,
-                    RegisterARM64::B16 as u8,
+                    RegisterARM64::X0 as u8,
+                    RegisterARM64::X1 as u8,
+                    RegisterARM64::X2 as u8,
+                    RegisterARM64::X3 as u8,
+                    RegisterARM64::X4 as u8,
+                    RegisterARM64::X5 as u8,
+                    RegisterARM64::X6 as u8,
+                    RegisterARM64::X7 as u8,
+                    RegisterARM64::X8 as u8,
+                    RegisterARM64::X9 as u8,
+                    RegisterARM64::X10 as u8,
+                    RegisterARM64::X11 as u8,
+                    RegisterARM64::X12 as u8,
+                    RegisterARM64::X13 as u8,
+                    RegisterARM64::X14 as u8,
+                    RegisterARM64::X15 as u8,
+                    RegisterARM64::X16 as u8,
 
                 ],
                 _ => panic!("Unsupported architecture"),
@@ -194,7 +194,12 @@ fn update(state: &mut State, message: Message) {
                 register_values.insert(reg as u32, value);
             }
 
-            let addr = state.unicorn.reg_read(RegisterX86::RIP).expect("Failed to read RIP");
+            let pc: u8 = match state.architecture {
+                Arch::X86 => RegisterX86::RIP as u8,
+                Arch::ARM64 => RegisterARM64::PC as u8,
+                _ => panic!("Unsupported architecture"),
+            };
+            let addr = state.unicorn.reg_read(pc).expect("Failed to read PC");
             state.unicorn.emu_start(addr, 0x1000 + 0x2D, 0, 1).unwrap();
 
             for &reg in &registers {
@@ -256,7 +261,7 @@ fn update(state: &mut State, message: Message) {
                 Arch::ARM64 => {
                     state.unicorn.reg_write(RegisterARM64::SP, 0x2000 + 0x1000).expect("Failed to set stack pointer");
                     state.unicorn.reg_write(RegisterARM64::PC, 0x1000).expect("Failed to set instruction pointer");
-                    state.unicorn.reg_write(RegisterARM64::B0, 10).unwrap();
+                    state.unicorn.reg_write(RegisterARM64::X0, 10).unwrap();
                 },
                 _ => panic!("Unsupported architecture"),
             }
@@ -308,12 +313,12 @@ fn disassemble_x86(uc: &Unicorn<()>) -> String {
 }
 
 fn disassemble_arm(uc: &Unicorn<()>) -> String {
-    let pc: u64 = uc.reg_read(RegisterARM::PC).expect("Failed to read PC");
+    let pc: u64 = uc.reg_read(RegisterARM64::PC).expect("Failed to read PC");
     let len: usize = HEXBIN_ARM.len() / 2;
     let mut buffer = vec![0u8; len-(pc - 0x1000) as usize];
     uc.mem_read(pc, &mut buffer).expect("Failed to read memory");
 
-    let disassembler = Capstone::new().arm().mode(arch::arm::ArchMode::Arm).build().expect("Failed to create Capstone disassembler");
+    let disassembler = Capstone::new().arm64().mode(arch::arm64::ArchMode::Arm).build().expect("Failed to create Capstone disassembler");
 
     let instructions = disassembler.disasm_all(&buffer, pc).expect("Failed to disassemble instructions");
     let mut result = String::new();
@@ -443,23 +448,23 @@ fn format_registers_arm(uc: &Unicorn<()>) -> String {
     let registers = vec![
         RegisterARM64::PC,
         RegisterARM64::SP,
-        RegisterARM64::B0,
-        RegisterARM64::B1,
-        RegisterARM64::B2,
-        RegisterARM64::B3,
-        RegisterARM64::B4,
-        RegisterARM64::B5,
-        RegisterARM64::B6,
-        RegisterARM64::B7,
-        RegisterARM64::B8,
-        RegisterARM64::B9,
-        RegisterARM64::B10,
-        RegisterARM64::B11,
-        RegisterARM64::B12,
-        RegisterARM64::B13,
-        RegisterARM64::B14,
-        RegisterARM64::B15,
-        RegisterARM64::B16,
+        RegisterARM64::X0,
+        RegisterARM64::X1,
+        RegisterARM64::X2,
+        RegisterARM64::X3,
+        RegisterARM64::X4,
+        RegisterARM64::X5,
+        RegisterARM64::X6,
+        RegisterARM64::X7,
+        RegisterARM64::X8,
+        RegisterARM64::X9,
+        RegisterARM64::X10,
+        RegisterARM64::X11,
+        RegisterARM64::X12,
+        RegisterARM64::X13,
+        RegisterARM64::X14,
+        RegisterARM64::X15,
+        RegisterARM64::X16,
     ];
 
     let mut result = String::new();
