@@ -298,15 +298,16 @@ fn disassemble(uc: &Unicorn<'static, ()>) -> String {
 fn disassemble_x86(uc: &Unicorn<()>) -> String {
     let rip: u64 = uc.reg_read(RegisterX86::RIP).expect("Failed to read RIP");
     let len: usize = HEXBIN_X86.len() / 2;
-    let mut buffer = vec![0u8; len-(rip - 0x1000) as usize];
-    uc.mem_read(rip, &mut buffer).expect("Failed to read memory");
+    let mut buffer = vec![0u8; len];
+    uc.mem_read(0x1000, &mut buffer).expect("Failed to read memory");
 
     let disassembler = Capstone::new().x86().mode(arch::x86::ArchMode::Mode64).build().expect("Failed to create Capstone disassembler");
 
-    let instructions = disassembler.disasm_all(&buffer, rip).expect("Failed to disassemble instructions");
+    let instructions = disassembler.disasm_all(&buffer, 0x1000).expect("Failed to disassemble instructions");
     let mut result = String::new();
     for instruction in instructions.iter() {
-        result.push_str(&format!("{}\n", instruction));
+        let cursor = if instruction.address() == rip { "-> " } else { "   " };
+        result.push_str(&format!("{}{}\n", cursor, instruction));
     }
 
     result
@@ -315,15 +316,16 @@ fn disassemble_x86(uc: &Unicorn<()>) -> String {
 fn disassemble_arm(uc: &Unicorn<()>) -> String {
     let pc: u64 = uc.reg_read(RegisterARM64::PC).expect("Failed to read PC");
     let len: usize = HEXBIN_ARM.len() / 2;
-    let mut buffer = vec![0u8; len-(pc - 0x1000) as usize];
-    uc.mem_read(pc, &mut buffer).expect("Failed to read memory");
+    let mut buffer = vec![0u8; len];
+    uc.mem_read(0x1000, &mut buffer).expect("Failed to read memory");
 
     let disassembler = Capstone::new().arm64().mode(arch::arm64::ArchMode::Arm).build().expect("Failed to create Capstone disassembler");
 
-    let instructions = disassembler.disasm_all(&buffer, pc).expect("Failed to disassemble instructions");
+    let instructions = disassembler.disasm_all(&buffer, 0x1000).expect("Failed to disassemble instructions");
     let mut result = String::new();
     for instruction in instructions.iter() {
-        result.push_str(&format!("{}\n", instruction));
+        let cursor = if instruction.address() == pc { "-> " } else { "   " };
+        result.push_str(&format!("{}{}\n", cursor, instruction));
     }
 
     result
