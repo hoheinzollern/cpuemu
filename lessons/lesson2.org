@@ -1,7 +1,7 @@
 #+TITLE: Linux Reverse-Engineering
 #+SUBTITLE: Cybermesterskaberne Training
 #+AUTHOR: Alessandro Bruni
-#+DATE: 2025
+#+DATE: 2026
 #+BEAMER_THEME: default
 #+BEAMER_ASPECTRATIO: 169
 #+OPTIONS: toc:nil
@@ -69,6 +69,7 @@ The ELF format contains:
    :END:
 
 #+ATTR_LATEX: :width 0.9\linewidth
+
 [[file:images/ELF.png]]
 
 * How can we analyse such programs?

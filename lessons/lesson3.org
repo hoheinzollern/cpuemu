@@ -1,7 +1,7 @@
 #+TITLE: Buffer Overflows
 #+SUBTITLE: Cybermesterskaberne Training
 #+AUTHOR: Alessandro Bruni
-#+DATE: 2025
+#+DATE: 2026
 #+BEAMER_THEME: default
 #+BEAMER_ASPECTRATIO: 169
 #+OPTIONS: toc:nil
