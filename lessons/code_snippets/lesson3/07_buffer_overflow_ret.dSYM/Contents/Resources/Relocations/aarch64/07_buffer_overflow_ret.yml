@@ -1,5 +1,0 @@
----
-triple:          'arm64-apple-darwin'
-binary-path:     'lesson3/07_buffer_overflow_ret'
-relocations:     []
-...
