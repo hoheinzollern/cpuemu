@@ -44,6 +44,7 @@ struct State {
     stack: text_editor::Content,
     snippets: Vec<Snippet>,
     selected_snippet: Option<Snippet>,
+    binary_size: usize,
 }
 
 const HEXBIN_X86 : &str = "554889e5897dfc8b45fc0fafc05dc3";
@@ -80,7 +81,7 @@ impl Default for State {
             _ => panic!("Unsupported architecture"),
         }
 
-        let (code_with_addr, code_without_addr) = disassemble(&uc);
+        let (code_with_addr, code_without_addr) = disassemble(&uc, binary.len());
         let heap = heap(&uc);
         let stack = stack(&uc);
 
@@ -97,6 +98,7 @@ impl Default for State {
             stack: text_editor::Content::with_text(&stack),
             snippets: load_snippets(),
             selected_snippet: None,
+            binary_size: binary.len(),
         };
 
         sync_register_inputs(&mut state);
@@ -121,7 +123,9 @@ fn load_snippets() -> Vec<Snippet> {
         if let Ok(entries) = fs::read_dir(&lesson_path) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) == Some("s") {
+                // Check for both .s and .S extensions
+                let ext = path.extension().and_then(|s| s.to_str());
+                if ext == Some("s") || ext == Some("S") {
                     if let Some(filename) = path.file_stem().and_then(|s| s.to_str()) {
                         let name = filename
                             .split('_')
@@ -201,7 +205,8 @@ fn reset_state(state: &mut State) {
         _ => panic!("Unsupported architecture"),
     }
 
-    let (code_with_addr, code_without_addr) = disassemble(&state.unicorn);
+    state.binary_size = binary.len();
+    let (code_with_addr, code_without_addr) = disassemble(&state.unicorn, state.binary_size);
     state.code = text_editor::Content::with_text(&code_without_addr);
     state.code_with_addresses = code_with_addr;
 
@@ -465,7 +470,7 @@ fn update(state: &mut State, message: Message) {
             // Assemble the code to memory
             if assemble(&mut state.unicorn, &state.code.text()) {
                 // Update the disassembly view to show what was assembled
-                let (code_with_addr, _) = disassemble(&state.unicorn);
+                let (code_with_addr, _) = disassemble(&state.unicorn, state.binary_size);
                 state.code_with_addresses = code_with_addr;
                 state.code_original = state.code.text().clone();
                 state.code_is_valid = true;
@@ -512,7 +517,8 @@ fn update(state: &mut State, message: Message) {
                 _ => panic!("Unsupported architecture"),
             }
 
-            let (code_with_addr, code_without_addr) = disassemble(&state.unicorn);
+            state.binary_size = binary.len();
+            let (code_with_addr, code_without_addr) = disassemble(&state.unicorn, state.binary_size);
             state.code = text_editor::Content::with_text(&code_without_addr);
             state.code_with_addresses = code_with_addr;
             state.code_original = code_without_addr;
@@ -534,6 +540,7 @@ fn update(state: &mut State, message: Message) {
                 
                 // Assemble the code
                 if let Some(binary) = assemble_code(&asm_code, state.architecture) {
+                    
                     // Reinitialize emulator with new code
                     let binary_len = ((binary.len() + 0xFFF) / 0x1000) * 0x1000;
                     let mode = match state.architecture {
@@ -575,7 +582,8 @@ fn update(state: &mut State, message: Message) {
                     }
                     
                     // Update UI
-                    let (code_with_addr, code_without_addr) = disassemble(&state.unicorn);
+                    state.binary_size = binary.len();
+                    let (code_with_addr, code_without_addr) = disassemble(&state.unicorn, state.binary_size);
                     state.code = text_editor::Content::with_text(&code_without_addr);
                     state.code_with_addresses = code_with_addr;
                     state.code_original = code_without_addr;
@@ -598,10 +606,10 @@ fn update(state: &mut State, message: Message) {
 fn extract_assembly_instructions(content: &str) -> String {
     content
         .lines()
-        .filter(|line| {
+        .filter_map(|line| {
             let trimmed = line.trim();
             // Skip empty lines, comments, and assembler directives
-            !trimmed.is_empty() 
+            if !trimmed.is_empty() 
                 && !trimmed.starts_with('#')
                 && !trimmed.starts_with('.')
                 && !trimmed.starts_with("_main:")
@@ -609,6 +617,11 @@ fn extract_assembly_instructions(content: &str) -> String {
                 && !trimmed.starts_with("_bar:")
                 && !trimmed.starts_with("_level")
                 && !trimmed.ends_with(':')  // Skip all labels
+            {
+                Some(trimmed)  // Return trimmed version (no leading spaces)
+            } else {
+                None
+            }
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -621,17 +634,16 @@ fn myarch_to_arch(arch: MyArch) -> Arch {
     }
 }
 
-fn disassemble(uc: &Unicorn<'static, ()>) -> (String, String) {
+fn disassemble(uc: &Unicorn<'static, ()>, binary_size: usize) -> (String, String) {
     match uc.get_arch() {
-        Arch::X86 => disassemble_x86(uc),
-        Arch::ARM64 => disassemble_arm(uc),
+        Arch::X86 => disassemble_x86(uc, binary_size),
+        Arch::ARM64 => disassemble_arm(uc, binary_size),
         _ => panic!("Unsupported architecture"),
     }
 }
 
-fn disassemble_x86(uc: &Unicorn<()>) -> (String, String) {
-    let len: usize = HEXBIN_X86.len() / 2;
-    let mut buffer = vec![0u8; len];
+fn disassemble_x86(uc: &Unicorn<()>, binary_size: usize) -> (String, String) {
+    let mut buffer = vec![0u8; binary_size];
     uc.mem_read(0x1000, &mut buffer).expect("Failed to read memory");
 
     let disassembler = Capstone::new().x86().mode(arch::x86::ArchMode::Mode64).build().expect("Failed to create Capstone disassembler");
@@ -654,9 +666,8 @@ fn disassemble_x86(uc: &Unicorn<()>) -> (String, String) {
     (with_addr, without_addr)
 }
 
-fn disassemble_arm(uc: &Unicorn<()>) -> (String, String) {
-    let len: usize = HEXBIN_ARM.len() / 2;
-    let mut buffer = vec![0u8; len];
+fn disassemble_arm(uc: &Unicorn<()>, binary_size: usize) -> (String, String) {
+    let mut buffer = vec![0u8; binary_size];
     uc.mem_read(0x1000, &mut buffer).expect("Failed to read memory");
 
     let disassembler = Capstone::new().arm64().mode(arch::arm64::ArchMode::Arm).build().expect("Failed to create Capstone disassembler");

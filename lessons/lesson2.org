@@ -5,6 +5,7 @@
 #+BEAMER_THEME: default
 #+BEAMER_ASPECTRATIO: 169
 #+OPTIONS: toc:nil
+#+LATEX_HEADER: \usefonttheme{serif}\setbeamertemplate{navigation symbols}{}\setbeamertemplate{footline}{\includegraphics[width=.3\textwidth]{ITU_logo_UK.eps}}\setbeamercolor{frametitle}{bg=black, fg=white}\setbeamercolor{title}{bg=black, fg=white}
 
 * What's been covered
 

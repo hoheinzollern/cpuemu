@@ -5,6 +5,7 @@
 #+BEAMER_THEME: default
 #+BEAMER_ASPECTRATIO: 169
 #+OPTIONS: toc:nil
+#+LATEX_HEADER: \usefonttheme{serif}\setbeamertemplate{navigation symbols}{}\setbeamertemplate{footline}{\includegraphics[width=.3\textwidth]{ITU_logo_UK.eps}}\setbeamercolor{frametitle}{bg=black, fg=white}\setbeamercolor{title}{bg=black, fg=white}
 
 #+ATTR_LATEX: :width 0.5\linewidth
 [[file:images/Boat.png]]
@@ -92,7 +93,7 @@ Each function call creates a stack frame containing:
 #+ATTR_LATEX: :width 0.5\linewidth
 [[file:images/Call_stack_layout.png]]
 
-#+BEGIN_EXAMPLE
+#+BEGIN_src
         High Address
     +------------------+
     | Previous Frame   |
@@ -108,7 +109,7 @@ Each function call creates a stack frame containing:
     | ...              |
     +------------------+ ← RSP points here
         Low Address
-#+END_EXAMPLE
+#+END_src
 
 * function stacks
 
@@ -282,7 +283,7 @@ We can overwrite variables... but can we do more?
 
 * Stack Frame with Return Address
 
-#+BEGIN_EXAMPLE
+#+BEGIN_src
         High Address
     +------------------+
     | Previous Frame   |
@@ -296,7 +297,7 @@ We can overwrite variables... but can we do more?
     | untouched        |
     +------------------+ ← RSP
         Low Address
-#+END_EXAMPLE
+#+END_src
 
 * What happens when we overwrite saved rip
 
@@ -487,29 +488,27 @@ So, what if we can control ~handler~?
 
 Attacker sends a packet of ~4096~ bytes
 
-#+BEGIN_EXAMPLE
-/*
-*     pcnet_receive()
-* appends checksum to end of Buffer
-*           |
-*           |
-* if buffer size is 4096
-*           |           PCNetState_st
-*           |             +--------+
-* write the checksum      |  ...   |
-*    out-of-bounds        +--------+
-*           |             | buffer |
-*           |             +--------+
-*           +------------>|  irq   +----+        IRQState
-*                         +--------+    |       +---------+
-*                         |  ...   |    |       |   ...   |
-*                         +--------+    |       +---------+
-*                                       +------>| handler |
-*                                               +---------+
-*                                               |   ...   |
-*                                               +---------+
-*/
-#+END_EXAMPLE
+#+BEGIN_src
+     pcnet_receive()
+ appends checksum to end of Buffer
+           |
+           |
+ if buffer size is 4096
+           |           PCNetState_st
+           |             +--------+
+ write the checksum      |  ...   |
+    out-of-bounds        +--------+
+           |             | buffer |
+           |             +--------+
+           +------------>|  irq   +----+        IRQState
+                         +--------+    |       +---------+
+                         |  ...   |    |       |   ...   |
+                         +--------+    |       +---------+
+                                       +------>| handler |
+                                               +---------+
+                                               |   ...   |
+                                               +---------+
+#+END_src
 
 The ~irq~ field is overwritten
 
@@ -517,29 +516,27 @@ The ~irq~ field is overwritten
 
 The attacker can create a fake ~IRQState~ somewhere in memory. Then, set the packet contents so that its *checksum* is the address of the fake ~IRQState~
 
-#+BEGIN_EXAMPLE
-/*
-*     pcnet_receive()
-* appends checksum to end of buffer
-*           |                                     Fake IRQState
-*           |                                    +--------------+
-* if buffer size is 4096                         |     ...      |
-*           |           PCNetState_st            +--------------+
-*           |             +--------+    +------->|   handler    |
-* write the checksum      |  ...   |    |        +--------------+
-*    out-of-bounds        +--------+    |        |     ...      |
-*           |             | buffer |    |        +--------------+
-*           |             +--------+    |
-*           +------------>|  irq   +----+        IRQState
-*                         +--------+    x       +---------+
-*                         |  ...   |    x       |   ...   |
-*                         +--------+    |       +---------+
-*                                       +------>| handler |
-*                                               +---------+
-*                                               |   ...   |
-*                                               +---------+
-*/
-#+END_EXAMPLE
+#+BEGIN_src
+     pcnet_receive()
+ appends checksum to end of buffer
+           |                                     Fake IRQState
+           |                                    +--------------+
+ if buffer size is 4096                         |     ...      |
+           |           PCNetState_st            +--------------+
+           |             +--------+    +------->|   handler    |
+ write the checksum      |  ...   |    |        +--------------+
+    out-of-bounds        +--------+    |        |     ...      |
+           |             | buffer |    |        +--------------+
+           |             +--------+    |
+           +------------>|  irq   +----+        IRQState
+                         +--------+    x       +---------+
+                         |  ...   |    x       |   ...   |
+                         +--------+    |       +---------+
+                                       +------>| handler |
+                                               +---------+
+                                               |   ...   |
+                                               +---------+
+#+END_src
 
 The ~handler~ field is now attacker-controlled
 
@@ -547,31 +544,29 @@ The ~handler~ field is now attacker-controlled
 
 At the end of ~pcnet_receive~, it calls ~pcnet_update_irq~, which calls ~qemu_set_irq~, which calls the attacker-controlled ~handler~
 
-#+BEGIN_EXAMPLE
-/*
-*                                                                            pcnet_receive
-*                                                                                 |
-*     pcnet_receive()                                                             v
-* appends checksum to end of buffer                                         pcnet_update_irq
-*           |                                     Fake IRQState                   |
-*           |                                    +--------------+                 v
-* if buffer size is 4096                         |     ...      |            qemu_set_irq
-*           |           PCNetState_st            +--------------+                 |
-*           |             +--------+    +------->|   handler    |<----------------+
-* write the checksum      |  ...   |    |        +--------------+
-*    out-of-bounds        +--------+    |        |     ...      |
-*           |             | buffer |    |        +--------------+
-*           |             +--------+    |
-*           +------------>|  irq   +----+        IRQState
-*                         +--------+    x       +---------+
-*                         |  ...   |    x       |   ...   |
-*                         +--------+    |       +---------+
-*                                       +------>| handler |
-*                                               +---------+
-*                                               |   ...   |
-*                                               +---------+
-*/
-#+END_EXAMPLE
+#+BEGIN_src
+                                                                            pcnet_receive
+                                                                                 |
+     pcnet_receive()                                                             v
+ appends checksum to end of buffer                                         pcnet_update_irq
+           |                                     Fake IRQState                   |
+           |                                    +--------------+                 v
+ if buffer size is 4096                         |     ...      |            qemu_set_irq
+           |           PCNetState_st            +--------------+                 |
+           |             +--------+    +------->|   handler    |<----------------+
+ write the checksum      |  ...   |    |        +--------------+
+    out-of-bounds        +--------+    |        |     ...      |
+           |             | buffer |    |        +--------------+
+           |             +--------+    |
+           +------------>|  irq   +----+        IRQState
+                         +--------+    x       +---------+
+                         |  ...   |    x       |   ...   |
+                         +--------+    |       +---------+
+                                       +------>| handler |
+                                               +---------+
+                                               |   ...   |
+                                               +---------+
+#+END_src
 
 Attacker now has arbitrary code execution
 
